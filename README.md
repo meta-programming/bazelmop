@@ -52,23 +52,33 @@ Perform atomic link replacements to merge duplicate files and reclaim space:
 
 ## How the Bazel Cache Works
 
-Bazel maintains all of its build state and cached objects under a user-wide root directory, typically at `~/.cache/bazel/_bazel_[username]/`. 
+Bazel maintains all of its build state, metadata, and compiled artifacts under a user-wide root directory, typically defaulting to `~/.cache/bazel/_bazel_[username]/` on Linux[^1]. 
 
-Inside this directory, space is consumed by three primary categories:
+Inside this output user root, space is consumed by three primary categories:
 
-### 1. Repository Cache (`cache/repos/v1/`)
-* **What it is**: A central, content-addressable store (CAS) for raw downloaded dependency archives (tarballs, zips, jars) and toolchains.
-* **Space profile**: Growing but naturally deduplicated. Bazel only downloads a specific URL/hash once system-wide.
+### 1. Repository Cache (`cache/repos/v1/`)[^2]
+* **What it is**: A central, user-wide content-addressable store (CAS) for raw downloaded dependency archives (tarballs, zips, jars) and toolchains.
+* **Space profile**: Growing but naturally deduplicated. Bazel only downloads a specific URL/hash once system-wide, storing it by its SHA-256 hash.
 
-### 2. Extracted Repository Sources (`[workspace_md5]/external/`)
-* **What it is**: The decompressed source code, rule configurations, and SDKs extracted from downloaded archives.
-* **Why it duplicates**: When Bazel compiles dependencies, it must extract them into the workspace's unique output base. If you have 20 branch checkouts, Bazel extracts and stores **20 separate copies** of the Go SDK, Node packages, and Protobuf compiler rules.
+### 2. Extracted Repository Sources (`[workspace_hash]/external/`)[^3]
+* **What it is**: The decompressed source code, rule configurations, and toolchains extracted from downloaded archives.
+* **Why it duplicates**: When Bazel compiles dependencies, it must extract them into the workspace's unique `outputBase` directory. By default, Bazel copies these extracted files. If you have 20 branch checkouts, Bazel extracts and stores **20 separate copies** of Go compiler libraries, NodeJS packages, or Protobuf rules[^4].
 
-### 3. Locally Compiled Build Outputs (`[workspace_md5]/execroot/[name]/bazel-out/`)
-* **What it is**: The objects (`.o`, `.a`), libraries, generated files, and deployable archives (`.jar`, `.war`) compiled during a build.
+### 3. Locally Compiled Build Outputs (`[workspace_hash]/execroot/[name]/bazel-out/`)[^5]
+* **What it is**: The objects (`.o`, `.a`), libraries, generated files, and deployable archives (`.jar`, `.war`) compiled during a local build.
 * **Why it duplicates**:
-  * **Across configs**: Building the same target for debugging (`dbg`), optimization (`opt`), and fast-building (`fastbuild`) creates separate output folders.
+  * **Across configurations**: Building the same target under different build configurations (e.g., debug vs optimized, or target platform transitions like `k8-fastbuild` and `k8-opt-exec`) creates separate output folders.
   * **Across workspaces**: Checking out different branches into separate directories causes Bazel to compile the identical toolchain wrappers and static libraries repeatedly across workspaces.
+
+---
+
+### Footnotes & Citations
+
+[^1]: **Output Directory Layout**: Officially documented at [Bazel Output Directory Layout](https://bazel.build/remote/output-directory-layout). The layout separates the `installBase` (Bazel binaries) from the `outputBase` (workspace build areas).
+[^2]: **Repository Cache**: Refer to [Running Builds with Bazel](https://bazel.build/run/build) details in the user manual. The cache stores downloaded archives and is shared across all workspaces.
+[^3]: **External Dependencies**: Bazel handles external dependencies by running repository rules and placing the results under the `external/` folder of each workspace output base. See [Bazel External Dependencies](https://bazel.build/concepts/dependencies) documentation.
+[^4]: **Experimental Hardlinks**: Bazel provides a flag `--experimental_repository_cache_hardlinks` to hard-link files from the central repository cache to a workspace's `external/` folder on cache hits. However, this is disabled by default and only shares links *within* the same workspace output base, not across different workspace directories. See the flag in the [Bazel Command-Line Reference](https://bazel.build/reference/command-line-reference).
+[^5]: **Execution Root and bazel-out**: The execution root is the working directory for action execution. It contains symlinks to inputs and the `bazel-out/` directory for outputs. Refer to [Bazel Execution Root Layout](https://bazel.build/remote/output-directory-layout#layout-diagram) for the exact path diagrams.
 
 ---
 
