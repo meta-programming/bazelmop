@@ -138,6 +138,11 @@ Inside this output user root, space is consumed by three primary categories:
 
 ---
 
+## Future Roadmap & TODOs
+* **Bazel Compile Web App**: Use Bazel to compile the embedded web dashboard from a more legitimate TypeScript source structure (e.g., using `rules_js` / `rules_ts` to compile and bundle hermetically) instead of embedding pre-minified assets directly.
+
+---
+
 ### Footnotes & Citations
 
 [^1]: **Output Directory Layout**: Officially documented at [Bazel Output Directory Layout](https://bazel.build/remote/output-directory-layout). The layout separates the `installBase` (Bazel binaries) from the `outputBase` (workspace build areas).
