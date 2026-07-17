@@ -8,11 +8,14 @@
 
 ### 1. Installation
 Clone the repository and install the binary using one of the options below:
-```bash
-# Option A: Build a local binary
-go build -o bazelmop main.go
 
-# Option B: Install directly to your $GOPATH/bin
+**Option A: Build a local binary**
+```bash
+go build -o bazelmop main.go
+```
+
+**Option B: Install directly to your `$GOPATH/bin`**
+```bash
 go install github.com/meta-programming/bazelmop@latest
 ```
 
