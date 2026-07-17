@@ -9,6 +9,7 @@ import (
 	"os"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -447,12 +448,12 @@ func (d *Deduplicator) generateMarkdownReport(entries []FileEntry, matches []Equ
 	sb.WriteString("## Executive Summary\n\n")
 	sb.WriteString("| Category | Files Scanned | Apparent Size | Reclaimable Space | Duplicates | % Reclaimed |\n")
 	sb.WriteString("| :--- | :--- | :--- | :--- | :--- | :--- |\n")
-	fmt.Fprintf(&sb, "| **1. Locally Compiled Build Outputs (`bazel-out/`)** | %d | %s | %s | %d | %.1f%% |\n",
-		countBuildOut, formatSize(sizeBuildOut), formatSize(reclaimBuildOut), dupsBuildOut, pctBuildOut)
-	fmt.Fprintf(&sb, "| **2. Extracted Repository Sources (`external/`)** | %d | %s | %s | %d | %.1f%% |\n",
-		countExternal, formatSize(sizeExternal), formatSize(reclaimExternal), dupsExternal, pctExternal)
-	fmt.Fprintf(&sb, "| **Total Cache Profile** | **%d** | **%s** | **%s** | **%d** | **%.1f%%** |\n",
-		totalScanned, formatSize(totalApparent), formatSize(totalReclaimable), totalDups, pctTotal)
+	fmt.Fprintf(&sb, "| **1. Locally Compiled Build Outputs (`bazel-out/`)** | %s | %s | %s | %s | %.1f%% |\n",
+		formatNumber(int64(countBuildOut)), formatSize(sizeBuildOut), formatSize(reclaimBuildOut), formatNumber(int64(dupsBuildOut)), pctBuildOut)
+	fmt.Fprintf(&sb, "| **2. Extracted Repository Sources (`external/`)** | %s | %s | %s | %s | %.1f%% |\n",
+		formatNumber(int64(countExternal)), formatSize(sizeExternal), formatSize(reclaimExternal), formatNumber(int64(dupsExternal)), pctExternal)
+	fmt.Fprintf(&sb, "| **Total Cache Profile** | **%s** | **%s** | **%s** | **%s** | **%.1f%%** |\n",
+		formatNumber(totalScanned), formatSize(totalApparent), formatSize(totalReclaimable), formatNumber(int64(totalDups)), pctTotal)
 
 	// Structure to hold metrics per workspace
 	type WSMetrics struct {
@@ -530,8 +531,8 @@ func (d *Deduplicator) generateMarkdownReport(entries []FileEntry, matches []Equ
 			if row.Apparent > 0 {
 				pct = float64(row.Reclaimable) * 100.0 / float64(row.Apparent)
 			}
-			fmt.Fprintf(&sb, "| `%s` | %s | %s | %d | %.1f%% |\n",
-				truncateMD5(row.MD5), formatSize(row.Apparent), formatSize(row.Reclaimable), row.DupCount, pct)
+			fmt.Fprintf(&sb, "| `%s` | %s | %s | %s | %.1f%% |\n",
+				truncateMD5(row.MD5), formatSize(row.Apparent), formatSize(row.Reclaimable), formatNumber(int64(row.DupCount)), pct)
 		}
 	}
 
@@ -558,8 +559,8 @@ func (d *Deduplicator) generateMarkdownReport(entries []FileEntry, matches []Equ
 			if row.Apparent > 0 {
 				pct = float64(row.Reclaimable) * 100.0 / float64(row.Apparent)
 			}
-			fmt.Fprintf(&sb, "| `%s` | %s | %s | %d | %.1f%% |\n",
-				truncateMD5(row.MD5), formatSize(row.Apparent), formatSize(row.Reclaimable), row.DupCount, pct)
+			fmt.Fprintf(&sb, "| `%s` | %s | %s | %s | %.1f%% |\n",
+				truncateMD5(row.MD5), formatSize(row.Apparent), formatSize(row.Reclaimable), formatNumber(int64(row.DupCount)), pct)
 		}
 	}
 
@@ -624,6 +625,18 @@ func formatSize(bytes int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.2f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+func formatNumber(n int64) string {
+	in := strconv.FormatInt(n, 10)
+	var out []rune
+	for i, r := range in {
+		if i > 0 && (len(in)-i)%3 == 0 {
+			out = append(out, ',')
+		}
+		out = append(out, r)
+	}
+	return string(out)
 }
 
 // atomicLink replaces target with a link to source atomically.
