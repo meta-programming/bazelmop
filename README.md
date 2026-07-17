@@ -56,6 +56,36 @@ Bazel maintains all of its build state, metadata, and compiled artifacts under a
 
 Inside this output user root, space is consumed by three primary categories:
 
+```text
+~/.cache/bazel/
+└── _bazel_username/
+    ├── install/
+    │   └── 6e2b9c8.../
+    │       ├── bazel (Bazel server binary)
+    │       └── embedded_jdk/
+    ├── cache/
+    │   └── repos/
+    │       └── v1/
+    │           ├── content_addressable/
+    │           │   └── sha256/
+    │           │       └── 1b4f4ef.../
+    │           │           └── file (Raw downloaded rules_go.tar.gz)
+    │           └── metadata/
+    │               └── 1b4f4ef... (Download metadata JSON)
+    └── 2041e6c... (Workspace Output Base MD5)
+        ├── external/
+        │   └── rules_go/ (Extracted source code)
+        │       └── README.md
+        ├── execroot/
+        │   └── _main/ (Execution root for workspace)
+        │       ├── bazel-out/
+        │       │   └── k8-fastbuild/
+        │       │       └── bin/
+        │       │           └── app_deploy.jar (Compiled local output)
+        │       └── external/ (Symlinks to extracted external/ repos)
+        └── action_cache/ (Build state databases)
+```
+
 ### 1. Repository Cache (`cache/repos/v1/`)[^2]
 * **What it is**: A central, user-wide content-addressable store (CAS) for raw downloaded dependency archives (tarballs, zips, jars) and toolchains.
 * **Space profile**: Growing but naturally deduplicated. Bazel only downloads a specific URL/hash once system-wide, storing it by its SHA-256 hash.
