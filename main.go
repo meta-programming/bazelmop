@@ -1,10 +1,9 @@
-// Package main provides the command-line interface and daemon execution
-// logic for the Cross-Workspace Bazel Cache Deduplicator.
+// Package main provides the Cobra command-line interface and daemon execution
+// logic for the bazelmop Cross-Workspace Bazel Cache Deduplicator.
 package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -14,73 +13,114 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/meta-programming/bazelmop/pkg/dedupe"
 )
 
+var (
+	rootPath        string
+	scanExternal    bool
+	scanBazelOut    bool
+	minReportSizeMB int64
+	preferReflink   bool
+	verbose         bool
+	dryRun          bool
+	daemonInterval  time.Duration
+)
+
 func main() {
-	// Parse CLI flags
-	rootPath := flag.String("root", "", "Bazel cache root directory (default: $HOME/.cache/bazel)")
-	dryRun := flag.Bool("dry-run", true, "Simulate deduplication and report savings without modifying files")
-	daemon := flag.Bool("daemon", false, "Run periodically as a background daemon")
-	interval := flag.Duration("interval", 1*time.Hour, "Daemon check interval (e.g., 1h, 30m)")
-	minReportSizeMB := flag.Int64("min-report-size", 10, "Minimum total size of duplicate group in MB to report hashes (default: 10)")
-	preferReflink := flag.Bool("prefer-reflink", true, "Attempt copy-on-write clone (reflink) first, falling back to hard link")
-	verbose := flag.Bool("verbose", false, "Print verbose execution details")
-	scanExternal := flag.Bool("scan-external", true, "Scan and deduplicate external repository dependencies (in external/)")
-	scanBazelOut := flag.Bool("scan-bazel-out", true, "Scan and deduplicate locally built targets (in bazel-out/)")
+	var rootCmd = &cobra.Command{
+		Use:   "bazelmop",
+		Short: "bazelmop deduplicates files across Bazel workspaces",
+		Long:  `bazelmop is a command-line utility to deduplicate external repository sources and compiled build outputs across multiple Bazel workspaces.`,
+	}
 
-	flag.Parse()
+	// Persistent flags (available to all subcommands)
+	rootCmd.PersistentFlags().StringVar(&rootPath, "root", "", "Bazel cache root directory (default: $HOME/.cache/bazel)")
+	rootCmd.PersistentFlags().BoolVar(&scanExternal, "scan-external", true, "Scan and deduplicate external repository dependencies (in external/)")
+	rootCmd.PersistentFlags().BoolVar(&scanBazelOut, "scan-bazel-out", true, "Scan and deduplicate locally built targets (in bazel-out/)")
+	rootCmd.PersistentFlags().Int64Var(&minReportSizeMB, "min-report-size", 10, "Minimum total size of duplicate group in MB to report hashes (default: 10)")
+	rootCmd.PersistentFlags().BoolVar(&preferReflink, "prefer-reflink", true, "Attempt copy-on-write clone (reflink) first, falling back to hard link")
+	rootCmd.PersistentFlags().BoolVar(&verbose, "verbose", false, "Print verbose execution details")
 
-	// Resolve the Bazel cache root
-	if *rootPath == "" {
+	var cleanCmd = &cobra.Command{
+		Use:   "clean",
+		Short: "Deduplicate files in the Bazel cache and reclaim space",
+		Run: func(cmd *cobra.Command, args []string) {
+			resolveRootPath()
+			runDedupe(dryRun)
+		},
+	}
+	cleanCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Simulate deduplication and report savings without modifying files")
+
+	var reportCmd = &cobra.Command{
+		Use:   "report",
+		Short: "Report potential space savings without modifying any files (alias for clean --dry-run)",
+		Run: func(cmd *cobra.Command, args []string) {
+			resolveRootPath()
+			runDedupe(true)
+		},
+	}
+
+	var daemonCmd = &cobra.Command{
+		Use:   "daemon",
+		Short: "Run bazelmop clean periodically in the background",
+		Run: func(cmd *cobra.Command, args []string) {
+			resolveRootPath()
+			runDaemon()
+		},
+	}
+	daemonCmd.Flags().DurationVar(&daemonInterval, "interval", 1*time.Hour, "Daemon check interval (e.g., 1h, 30m)")
+
+	rootCmd.AddCommand(cleanCmd)
+	rootCmd.AddCommand(reportCmd)
+	rootCmd.AddCommand(daemonCmd)
+
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+}
+
+func resolveRootPath() {
+	if rootPath == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			log.Fatalf("Error: failed to resolve user home directory: %v", err)
 		}
-		*rootPath = filepath.Join(home, ".cache", "bazel")
-	} else if strings.HasPrefix(*rootPath, "~") {
+		rootPath = filepath.Join(home, ".cache", "bazel")
+	} else if strings.HasPrefix(rootPath, "~") {
 		home, err := os.UserHomeDir()
 		if err == nil {
-			*rootPath = filepath.Join(home, (*rootPath)[1:])
+			rootPath = filepath.Join(home, rootPath[1:])
 		}
 	}
+	rootPath = filepath.Clean(rootPath)
+}
 
-	// Clean the resolved path
-	*rootPath = filepath.Clean(*rootPath)
-
-	// Verify the root directory exists
-	info, err := os.Stat(*rootPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			log.Fatalf("Error: Bazel root directory %q does not exist. Ensure Bazel has run at least once.", *rootPath)
-		}
-		log.Fatalf("Error: failed to inspect Bazel root directory: %v", err)
-	}
-	if !info.IsDir() {
-		log.Fatalf("Error: Bazel root path %q is not a directory.", *rootPath)
-	}
-
+func runDedupe(isDryRun bool) {
 	config := dedupe.Config{
-		DryRun:        *dryRun,
-		PreferReflink: *preferReflink,
-		MinReportSize: *minReportSizeMB * 1024 * 1024,
-		Verbose:       *verbose,
-		ScanExternal:  *scanExternal,
-		ScanBazelOut:  *scanBazelOut,
+		DryRun:        isDryRun,
+		PreferReflink: preferReflink,
+		MinReportSize: minReportSizeMB * 1024 * 1024,
+		Verbose:       verbose,
+		ScanExternal:  scanExternal,
+		ScanBazelOut:  scanBazelOut,
 	}
 
 	fmt.Println("=========================================================")
 	fmt.Println("        Cross-Workspace Bazel Cache Deduplicator        ")
 	fmt.Println("=========================================================")
-	fmt.Printf("Bazel Root:     %s\n", *rootPath)
+	fmt.Printf("Bazel Root:     %s\n", rootPath)
 	fmt.Printf("Dry Run Mode:   %v\n", config.DryRun)
 	fmt.Printf("Reflink Pref:   %v\n", config.PreferReflink)
 	fmt.Printf("Scan external:  %v\n", config.ScanExternal)
 	fmt.Printf("Scan bazel-out: %v\n", config.ScanBazelOut)
-	fmt.Printf("Min Report Sz:  %d MB\n", *minReportSizeMB)
+	fmt.Printf("Min Report Sz:  %d MB\n", minReportSizeMB)
 	fmt.Println("=========================================================")
 
-	// Context for cancellation
+	// Setup context with cancellation for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -93,12 +133,74 @@ func main() {
 		cancel()
 	}()
 
+	start := time.Now()
+	fmt.Printf("\n[%s] Scanning directories...\n", start.Format(time.RFC3339))
+	d := dedupe.NewDeduplicator(config)
+
+	entries, err := d.Scan(ctx, rootPath)
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		log.Fatalf("Error: Scan failed: %v", err)
+	}
+
+	fmt.Printf("Scan completed in %v. Found %d candidate files.\n", time.Since(start), len(entries))
+	if len(entries) == 0 {
+		fmt.Println("No files found to process.")
+		return
+	}
+
+	fmt.Println("Matching and calculating savings...")
+	matchStart := time.Now()
+	err = d.Deduplicate(ctx, entries)
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		log.Fatalf("Error: Deduplication failed: %v", err)
+	}
+	fmt.Printf("Deduplication phase took %v.\n", time.Since(matchStart))
+}
+
+func runDaemon() {
+	config := dedupe.Config{
+		DryRun:        false, // Daemon always executes actual clean replacements
+		PreferReflink: preferReflink,
+		MinReportSize: minReportSizeMB * 1024 * 1024,
+		Verbose:       verbose,
+		ScanExternal:  scanExternal,
+		ScanBazelOut:  scanBazelOut,
+	}
+
+	fmt.Println("=========================================================")
+	fmt.Println("        Cross-Workspace Bazel Cache Deduplicator (Daemon)")
+	fmt.Println("=========================================================")
+	fmt.Printf("Bazel Root:     %s\n", rootPath)
+	fmt.Printf("Check Interval: %v\n", daemonInterval)
+	fmt.Printf("Reflink Pref:   %v\n", config.PreferReflink)
+	fmt.Printf("Scan external:  %v\n", config.ScanExternal)
+	fmt.Printf("Scan bazel-out: %v\n", config.ScanBazelOut)
+	fmt.Printf("Min Report Sz:  %d MB\n", minReportSizeMB)
+	fmt.Println("=========================================================")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		fmt.Println("\nReceived shutdown signal. Stopping daemon gracefully...")
+		cancel()
+	}()
+
 	runner := func() {
 		start := time.Now()
-		fmt.Printf("\n[%s] Scanning directories...\n", start.Format(time.RFC3339))
+		fmt.Printf("\n[%s] Starting scheduled scan...\n", start.Format(time.RFC3339))
 		d := dedupe.NewDeduplicator(config)
 
-		entries, err := d.Scan(ctx, *rootPath)
+		entries, err := d.Scan(ctx, rootPath)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -109,12 +211,9 @@ func main() {
 
 		fmt.Printf("Scan completed in %v. Found %d candidate files.\n", time.Since(start), len(entries))
 		if len(entries) == 0 {
-			fmt.Println("No files found to process.")
 			return
 		}
 
-		fmt.Println("Matching and calculating savings...")
-		matchStart := time.Now()
 		err = d.Deduplicate(ctx, entries)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -123,19 +222,12 @@ func main() {
 			log.Printf("Error: Deduplication failed: %v", err)
 			return
 		}
-		fmt.Printf("Deduplication phase took %v.\n", time.Since(matchStart))
+		fmt.Printf("Completed scheduled deduplication.\n")
 	}
 
-	if !*daemon {
-		runner()
-		return
-	}
-
-	// Daemon execution loop
-	fmt.Printf("Starting in Daemon Mode. Check interval: %v\n", *interval)
 	runner() // Run first check immediately
 
-	ticker := time.NewTicker(*interval)
+	ticker := time.NewTicker(daemonInterval)
 	defer ticker.Stop()
 
 	for {
