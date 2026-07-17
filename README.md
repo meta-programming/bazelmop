@@ -54,7 +54,7 @@ Perform atomic link replacements to merge duplicate files and reclaim space:
 
 Bazel maintains all of its build state, metadata, and compiled artifacts under a user-wide root directory, typically defaulting to `~/.cache/bazel/_bazel_[username]/` on Linux[^1]. 
 
-Inside this output user root, space is consumed by three primary categories:
+Here is an example structure of a typical Bazel cache directory layout:
 
 ```text
 ~/.cache/bazel/
@@ -85,6 +85,8 @@ Inside this output user root, space is consumed by three primary categories:
         │       └── external/ (Symlinks to extracted external/ repos)
         └── action_cache/ (Build state databases)
 ```
+
+Inside this output user root, space is consumed by three primary categories:
 
 ### 1. Repository Cache (`cache/repos/v1/`)[^2]
 * **What it is**: A central, user-wide content-addressable store (CAS) for raw downloaded dependency archives (tarballs, zips, jars) and toolchains.
