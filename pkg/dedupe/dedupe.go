@@ -413,9 +413,7 @@ func (d *Deduplicator) processMatches(ctx context.Context, entries []FileEntry) 
 	}
 
 	// Generate and print reports
-	d.printGlobalMetrics(len(entries), totalApparentSize, totalDiskFootprint, totalReclaimable)
-	d.printWorkspaceBreakdown(entries, matchesToLink)
-	d.printLargeDuplicates(matchesToLink)
+	d.printMarkdownReport(entries, matchesToLink)
 
 	if d.config.DryRun {
 		fmt.Println("\n[Dry Run] No files were modified.")
@@ -463,50 +461,166 @@ func extractWorkspace(path string) (string, string) {
 	return "unknown", "unknown"
 }
 
-func (d *Deduplicator) printGlobalMetrics(scannedCount int, apparent, footprint, reclaimable int64) {
-	fmt.Println("\n=== Global Space Metrics ===")
-	fmt.Printf("Total Scanned Files: %d\n", scannedCount)
-	fmt.Printf("Total Apparent Size: %s\n", formatSize(apparent))
-	fmt.Printf("Current Disk Footprint: %s\n", formatSize(footprint))
-	fmt.Printf("Reclaimable Space: %s\n", formatSize(reclaimable))
+func truncateMD5(s string) string {
+	if len(s) == 32 {
+		return s[:8] + "..."
+	}
+	return s
 }
 
-func (d *Deduplicator) printWorkspaceBreakdown(entries []FileEntry, matches []EquivalenceClass) {
-	fmt.Println("\n=== Workspace Breakdown Table ===")
-	fmt.Printf("%-32s | %-15s | %-15s | %-15s\n", "Workspace Path / MD5", "Apparent Size", "Disk Footprint", "Reclaimable")
-	fmt.Println(strings.Repeat("-", 85))
+func (d *Deduplicator) printMarkdownReport(entries []FileEntry, matches []EquivalenceClass) {
+	var countBuildOut, countExternal int
+	var sizeBuildOut, sizeExternal int64
+	var reclaimBuildOut, reclaimExternal int64
 
-	// Group entries by workspace MD5
-	wsApparent := make(map[string]int64)
-	wsInodes := make(map[string]map[uint64]int64)
+	// Track files per category
+	for _, entry := range entries {
+		if strings.Contains(entry.Path, "/bazel-out/") {
+			countBuildOut++
+			sizeBuildOut += entry.Size
+		} else if strings.Contains(entry.Path, "/external/") {
+			countExternal++
+			sizeExternal += entry.Size
+		}
+	}
+
+	// Track reclaimable per category
+	for _, match := range matches {
+		for _, dup := range match.Duplicates {
+			if strings.Contains(dup.Path, "/bazel-out/") {
+				reclaimBuildOut += match.Representative.Size
+			} else if strings.Contains(dup.Path, "/external/") {
+				reclaimExternal += match.Representative.Size
+			}
+		}
+	}
+
+	// Compute totals
+	totalScanned := int64(len(entries))
+	var totalApparent int64
+	for _, entry := range entries {
+		totalApparent += entry.Size
+	}
+	totalReclaimable := reclaimBuildOut + reclaimExternal
+
+	pctBuildOut := 0.0
+	if sizeBuildOut > 0 {
+		pctBuildOut = float64(reclaimBuildOut) * 100.0 / float64(sizeBuildOut)
+	}
+	pctExternal := 0.0
+	if sizeExternal > 0 {
+		pctExternal = float64(reclaimExternal) * 100.0 / float64(sizeExternal)
+	}
+	pctTotal := 0.0
+	if totalApparent > 0 {
+		pctTotal = float64(totalReclaimable) * 100.0 / float64(totalApparent)
+	}
+
+	fmt.Println("\n# Bazel Cache Deduplication Report")
+	fmt.Println("\n## Executive Summary")
+	fmt.Println("\n| Category | Files Scanned | Apparent Size | Reclaimable Space | % Reclaimed |")
+	fmt.Println("| :--- | :--- | :--- | :--- | :--- |")
+	fmt.Printf("| **1. Locally Compiled Build Outputs (`bazel-out/`)** | %d | %s | %s | %.1f%% |\n",
+		countBuildOut, formatSize(sizeBuildOut), formatSize(reclaimBuildOut), pctBuildOut)
+	fmt.Printf("| **2. Extracted Repository Sources (`external/`)** | %d | %s | %s | %.1f%% |\n",
+		countExternal, formatSize(sizeExternal), formatSize(reclaimExternal), pctExternal)
+	fmt.Printf("| **Total Cache Profile** | **%d** | **%s** | **%s** | **%.1f%%** |\n",
+		totalScanned, formatSize(totalApparent), formatSize(totalReclaimable), pctTotal)
+
+	// Structure to hold metrics per workspace
+	type WSMetrics struct {
+		Apparent    int64
+		Reclaimable int64
+	}
+	
+	wsBuildOut := make(map[string]*WSMetrics)
+	wsExternal := make(map[string]*WSMetrics)
 
 	for _, entry := range entries {
 		_, ws := extractWorkspace(entry.Path)
-		wsApparent[ws] += entry.Size
-		if wsInodes[ws] == nil {
-			wsInodes[ws] = make(map[uint64]int64)
+		if strings.Contains(entry.Path, "/bazel-out/") {
+			if wsBuildOut[ws] == nil {
+				wsBuildOut[ws] = &WSMetrics{}
+			}
+			wsBuildOut[ws].Apparent += entry.Size
+		} else if strings.Contains(entry.Path, "/external/") {
+			if wsExternal[ws] == nil {
+				wsExternal[ws] = &WSMetrics{}
+			}
+			wsExternal[ws].Apparent += entry.Size
 		}
-		wsInodes[ws][entry.Inode] = entry.Size
 	}
 
-	// Calculate reclaimable per workspace
-	wsReclaimable := make(map[string]int64)
 	for _, match := range matches {
 		for _, dup := range match.Duplicates {
 			_, ws := extractWorkspace(dup.Path)
-			wsReclaimable[ws] += match.Representative.Size
+			if strings.Contains(dup.Path, "/bazel-out/") {
+				if wsBuildOut[ws] == nil {
+					wsBuildOut[ws] = &WSMetrics{}
+				}
+				wsBuildOut[ws].Reclaimable += match.Representative.Size
+			} else if strings.Contains(dup.Path, "/external/") {
+				if wsExternal[ws] == nil {
+					wsExternal[ws] = &WSMetrics{}
+				}
+				wsExternal[ws].Reclaimable += match.Representative.Size
+			}
 		}
 	}
 
-	for ws, apparent := range wsApparent {
-		var footprint int64
-		for _, sz := range wsInodes[ws] {
-			footprint += sz
+	type WSRow struct {
+		MD5         string
+		Apparent    int64
+		Reclaimable int64
+	}
+
+	fmt.Println("\n## Detailed Category Views")
+
+	if d.config.ScanBazelOut && len(wsBuildOut) > 0 {
+		var buildOutRows []WSRow
+		for ws, metrics := range wsBuildOut {
+			buildOutRows = append(buildOutRows, WSRow{MD5: ws, Apparent: metrics.Apparent, Reclaimable: metrics.Reclaimable})
 		}
-		reclaimable := wsReclaimable[ws]
-		fmt.Printf("%-32s | %-15s | %-15s | %-15s\n", ws, formatSize(apparent), formatSize(footprint), formatSize(reclaimable))
+		sort.Slice(buildOutRows, func(i, j int) bool {
+			return buildOutRows[i].Reclaimable > buildOutRows[j].Reclaimable
+		})
+
+		fmt.Println("\n### 1. Locally Compiled Build Outputs (`bazel-out/`)")
+		fmt.Println("*Local compilation artifacts, binaries, and libraries built inside target configurations.*")
+		fmt.Println("\n| Workspace MD5 | Apparent Size | Reclaimable Space | % Reclaimed |")
+		fmt.Println("| :--- | :--- | :--- | :--- |")
+		for _, row := range buildOutRows {
+			pct := 0.0
+			if row.Apparent > 0 {
+				pct = float64(row.Reclaimable) * 100.0 / float64(row.Apparent)
+			}
+			fmt.Printf("| `%s` | %s | %s | %.1f%% |\n", truncateMD5(row.MD5), formatSize(row.Apparent), formatSize(row.Reclaimable), pct)
+		}
+	}
+
+	if d.config.ScanExternal && len(wsExternal) > 0 {
+		var externalRows []WSRow
+		for ws, metrics := range wsExternal {
+			externalRows = append(externalRows, WSRow{MD5: ws, Apparent: metrics.Apparent, Reclaimable: metrics.Reclaimable})
+		}
+		sort.Slice(externalRows, func(i, j int) bool {
+			return externalRows[i].Reclaimable > externalRows[j].Reclaimable
+		})
+
+		fmt.Println("\n### 2. Extracted Repository Sources (`external/`)")
+		fmt.Println("*Decompressed third-party repository trees, SDKs, and toolchains downloaded from repository rules.*")
+		fmt.Println("\n| Workspace MD5 | Apparent Size | Reclaimable Space | % Reclaimed |")
+		fmt.Println("| :--- | :--- | :--- | :--- |")
+		for _, row := range externalRows {
+			pct := 0.0
+			if row.Apparent > 0 {
+				pct = float64(row.Reclaimable) * 100.0 / float64(row.Apparent)
+			}
+			fmt.Printf("| `%s` | %s | %s | %.1f%% |\n", truncateMD5(row.MD5), formatSize(row.Apparent), formatSize(row.Reclaimable), pct)
+		}
 	}
 }
+
 
 func (d *Deduplicator) printLargeDuplicates(matches []EquivalenceClass) {
 	fmt.Println("\n=== Large Duplicates ===")

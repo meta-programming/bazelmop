@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"bazel-cache-share/pkg/dedupe"
+	"bazelmop/pkg/dedupe"
 )
 
 func main() {
@@ -26,8 +26,8 @@ func main() {
 	minReportSizeMB := flag.Int64("min-report-size", 10, "Minimum total size of duplicate group in MB to report hashes (default: 10)")
 	preferReflink := flag.Bool("prefer-reflink", true, "Attempt copy-on-write clone (reflink) first, falling back to hard link")
 	verbose := flag.Bool("verbose", false, "Print verbose execution details")
-	scanExternal := flag.Bool("external", true, "Scan and deduplicate external repository dependencies (in external/)")
-	scanBazelOut := flag.Bool("bazel-out", true, "Scan and deduplicate locally built targets (in bazel-out/)")
+	scanExternal := flag.Bool("scan-external", true, "Scan and deduplicate external repository dependencies (in external/)")
+	scanBazelOut := flag.Bool("scan-bazel-out", true, "Scan and deduplicate locally built targets (in bazel-out/)")
 
 	flag.Parse()
 

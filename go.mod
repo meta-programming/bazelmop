@@ -1,4 +1,4 @@
-module bazel-cache-share
+module bazelmop
 
 go 1.25.0
 
