@@ -77,6 +77,7 @@ func main() {
 		},
 	}
 	daemonCmd.Flags().DurationVar(&daemonInterval, "interval", 1*time.Hour, "Daemon check interval (e.g., 1h, 30m)")
+	daemonCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Simulate deduplication and report savings without modifying files")
 	daemonCmd.Flags().BoolVar(&webEnabled, "web", false, "Enable the web report dashboard server")
 	daemonCmd.Flags().StringVar(&webHost, "web-host", "localhost", "Binding address for the web dashboard")
 	daemonCmd.Flags().StringVar(&webPort, "web-port", "8080", "Port for the web dashboard server")
@@ -173,7 +174,7 @@ func runDedupe(isDryRun bool) {
 
 func runDaemon() {
 	config := dedupe.Config{
-		DryRun:        false, // Daemon always executes actual clean replacements
+		DryRun:        dryRun,
 		PreferReflink: preferReflink,
 		MinReportSize: minReportSizeMB * 1024 * 1024,
 		Verbose:       verbose,
