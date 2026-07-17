@@ -6,10 +6,14 @@
 
 ## Quickstart
 
-### 1. Build the Binary
-Clone the repository and compile the program using Go:
+### 1. Installation
+Clone the repository and install the binary using one of the options below:
 ```bash
+# Option A: Build a local binary
 go build -o bazelmop main.go
+
+# Option B: Install directly to your $GOPATH/bin
+go install github.com/meta-programming/bazelmop@latest
 ```
 
 ### 2. Run in Dry-Run Mode (Safe Analysis)
@@ -22,6 +26,12 @@ Scan the Bazel cache and report potential space savings without modifying any fi
 Perform atomic link replacements to merge duplicate files and reclaim space:
 ```bash
 ./bazelmop clean --scan-external=true --scan-bazel-out=true
+```
+
+### 4. Run the Daemon with the Web Dashboard
+Launch the background daemon and host the offline, real-time Server-Sent Events (SSE) report dashboard:
+```bash
+./bazelmop daemon --web=true --web-port=8080 --interval=30m
 ```
 
 ---
