@@ -15,13 +15,13 @@ go build -o bazelmop main.go
 ### 2. Run in Dry-Run Mode (Safe Analysis)
 Scan the Bazel cache and report potential space savings without modifying any files on disk:
 ```bash
-./bazelmop --root=$HOME/.cache/bazel --scan-external=true --scan-bazel-out=true --dry-run
+./bazelmop --scan-external=true --scan-bazel-out=true --dry-run
 ```
 
 ### 3. Run Deduplication (Reclaim Space)
 Perform atomic link replacements to merge duplicate files and reclaim space:
 ```bash
-./bazelmop --root=$HOME/.cache/bazel --scan-external=true --scan-bazel-out=true --dry-run=false
+./bazelmop --scan-external=true --scan-bazel-out=true --dry-run=false
 ```
 
 ---
