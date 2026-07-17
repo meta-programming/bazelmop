@@ -173,6 +173,8 @@ func runDedupe(isDryRun bool) {
 }
 
 func runDaemon() {
+	var webSrv *web.Server
+
 	config := dedupe.Config{
 		DryRun:        dryRun,
 		PreferReflink: preferReflink,
@@ -180,6 +182,11 @@ func runDaemon() {
 		Verbose:       verbose,
 		ScanExternal:  scanExternal,
 		ScanBazelOut:  scanBazelOut,
+		OnProgress: func(status string) {
+			if webEnabled && webSrv != nil {
+				webSrv.UpdateStatus(status)
+			}
+		},
 	}
 
 	fmt.Println("=========================================================")
@@ -199,7 +206,6 @@ func runDaemon() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var webSrv *web.Server
 	if webEnabled {
 		webSrv = web.NewServer(webHost, webPort)
 		go func() {

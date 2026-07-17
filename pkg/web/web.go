@@ -25,6 +25,7 @@ type Server struct {
 	reportMarkdown string
 	updatedAt      time.Time
 	nextScanAt     time.Time
+	status         string
 
 	clientsMu sync.Mutex
 	clients   map[chan string]bool
@@ -46,6 +47,7 @@ func (s *Server) UpdateReport(markdown string, nextScan time.Time) {
 	s.reportMarkdown = markdown
 	s.updatedAt = time.Now()
 	s.nextScanAt = nextScan
+	s.status = "Idle"
 	s.mu.Unlock()
 
 	s.broadcast()
@@ -60,13 +62,27 @@ func (s *Server) UpdateNextScan(nextScan time.Time) {
 	s.broadcast()
 }
 
+// UpdateStatus updates the server's status and broadcasts it to clients.
+func (s *Server) UpdateStatus(status string) {
+	s.mu.Lock()
+	s.status = status
+	s.mu.Unlock()
+
+	s.broadcast()
+}
+
 // broadcast sends the current state payload to all connected SSE client channels.
 func (s *Server) broadcast() {
 	s.mu.RLock()
+	st := s.status
+	if st == "" {
+		st = "Idle"
+	}
 	payload := map[string]interface{}{
 		"report":     s.reportMarkdown,
 		"updated_at": "",
 		"next_scan":  "",
+		"status":     st,
 	}
 	if !s.updatedAt.IsZero() {
 		payload["updated_at"] = s.updatedAt.Format(time.RFC3339)
@@ -131,12 +147,18 @@ func (s *Server) Start(ctx context.Context) error {
 		report := s.reportMarkdown
 		updated := s.updatedAt
 		nextScan := s.nextScanAt
+		st := s.status
 		s.mu.RUnlock()
+
+		if st == "" {
+			st = "Idle"
+		}
 
 		payload := map[string]interface{}{
 			"report":     report,
 			"updated_at": "",
 			"next_scan":  "",
+			"status":     st,
 		}
 		if !updated.IsZero() {
 			payload["updated_at"] = updated.Format(time.RFC3339)
@@ -174,10 +196,15 @@ func (s *Server) Start(ctx context.Context) error {
 
 		// Send the initial report immediately upon connection
 		s.mu.RLock()
+		st := s.status
+		if st == "" {
+			st = "Idle"
+		}
 		initPayload := map[string]interface{}{
 			"report":     s.reportMarkdown,
 			"updated_at": "",
 			"next_scan":  "",
+			"status":     st,
 		}
 		if !s.updatedAt.IsZero() {
 			initPayload["updated_at"] = s.updatedAt.Format(time.RFC3339)

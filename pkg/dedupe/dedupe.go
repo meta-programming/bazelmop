@@ -36,12 +36,19 @@ type Config struct {
 	Verbose       bool
 	ScanExternal  bool // Whether to scan and deduplicate external/ (extracted third-party repos)
 	ScanBazelOut  bool // Whether to scan and deduplicate bazel-out/ (locally built targets)
+	OnProgress    func(status string) // Callback for real-time progress updates
 }
 
 // Deduplicator manages the walking, matching, and linking process.
 type Deduplicator struct {
 	config Config
 	casMap map[uint64]string // Inode -> SHA-256 hash resolved from repository cache
+}
+
+func (d *Deduplicator) updateProgress(status string) {
+	if d.config.OnProgress != nil {
+		d.config.OnProgress(status)
+	}
 }
 
 // NewDeduplicator instantiates a new deduplicator runner.
@@ -54,6 +61,7 @@ func NewDeduplicator(cfg Config) *Deduplicator {
 
 // Scan walks the workspaces and builds the list of file entries using pkg/bazelfiles.
 func (d *Deduplicator) Scan(ctx context.Context, root string) ([]FileEntry, error) {
+	d.updateProgress("Scanning directories...")
 	discovered, err := bazelfiles.Walk(ctx, bazelcas.RootCASPath(root),
 		bazelfiles.WithScanExternal(d.config.ScanExternal),
 		bazelfiles.WithScanBazelOut(d.config.ScanBazelOut),
@@ -179,6 +187,7 @@ func (d *Deduplicator) Deduplicate(ctx context.Context, entries []FileEntry) (st
 
 	fmt.Printf("Calculating SHA-256 hashes for %d unlinked candidate files (skipping %d empty and %d unique-sized files)...\n",
 		len(indicesToHash), len(entries)-len(indicesToHash)-len(d.casMap), len(entries)-len(indicesToHash))
+	d.updateProgress(fmt.Sprintf("Hashing files: %d Group Candidates...", len(indicesToHash)))
 
 	if len(indicesToHash) == 0 {
 		return d.processMatches(ctx, entries)
@@ -231,6 +240,7 @@ func (d *Deduplicator) Deduplicate(ctx context.Context, entries []FileEntry) (st
 					lastLogTime = time.Now()
 					percent := float64(currentHashed) * 100.0 / float64(len(indicesToHash))
 					fmt.Printf("Progress: Hashed %d/%d files (%.1f%%)...\n", currentHashed, len(indicesToHash), percent)
+					d.updateProgress(fmt.Sprintf("Hashing files: %d/%d (%.1f%%)...", currentHashed, len(indicesToHash), percent))
 				}
 				logMutex.Unlock()
 			}
@@ -324,16 +334,19 @@ func (d *Deduplicator) processMatches(ctx context.Context, entries []FileEntry) 
 
 	if d.config.DryRun {
 		fmt.Println("\n[Dry Run] No files were modified.")
+		d.updateProgress("Idle")
 		return report, nil
 	}
 
 	// Execute linking
+	d.updateProgress("Performing deduplication linking...")
 	fmt.Printf("\nPerforming deduplication linking for %d groups...\n", len(matchesToLink))
 	for _, match := range matchesToLink {
 		source := match.Representative.Path
 		for _, dup := range match.Duplicates {
 			select {
 			case <-ctx.Done():
+				d.updateProgress("Idle")
 				return report, ctx.Err()
 			default:
 			}
@@ -349,6 +362,7 @@ func (d *Deduplicator) processMatches(ctx context.Context, entries []FileEntry) 
 	}
 
 	fmt.Println("Deduplication completed successfully!")
+	d.updateProgress("Idle")
 	return report, nil
 }
 
