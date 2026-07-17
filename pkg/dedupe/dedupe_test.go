@@ -16,43 +16,92 @@ func TestAtomicLinkSafetyGate(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	source := filepath.Join(tmpDir, "source")
-	targetWriteable := filepath.Join(tmpDir, "target_writeable")
-	targetReadOnly := filepath.Join(tmpDir, "target_readonly")
+	sourceDir := filepath.Join(tmpDir, "source_dir")
+	targetWriteableDir := filepath.Join(tmpDir, "target_writeable_dir")
+	targetReadOnlyDir := filepath.Join(tmpDir, "target_readonly_dir")
 
+	if err := os.MkdirAll(sourceDir, 0755); err != nil {
+		t.Fatalf("failed to create source dir: %v", err)
+	}
+	if err := os.MkdirAll(targetWriteableDir, 0755); err != nil {
+		t.Fatalf("failed to create target writeable dir: %v", err)
+	}
+	if err := os.MkdirAll(targetReadOnlyDir, 0755); err != nil {
+		t.Fatalf("failed to create target readonly dir: %v", err)
+	}
+
+	source := filepath.Join(sourceDir, "source")
+	targetWriteable := filepath.Join(targetWriteableDir, "target_writeable")
+	targetReadOnly := filepath.Join(targetReadOnlyDir, "target_readonly")
+
+	// Write files
 	if err := os.WriteFile(source, []byte("shared content"), 0444); err != nil {
 		t.Fatalf("failed to write source: %v", err)
 	}
-	// Writeable file
 	if err := os.WriteFile(targetWriteable, []byte("shared content"), 0644); err != nil {
 		t.Fatalf("failed to write targetWriteable: %v", err)
 	}
-	// Read-only file
 	if err := os.WriteFile(targetReadOnly, []byte("shared content"), 0444); err != nil {
 		t.Fatalf("failed to write targetReadOnly: %v", err)
 	}
 
-	d := NewDeduplicator(Config{DryRun: false, PreferReflink: false})
-
-	// 1. Linking to writeable file should succeed by automatically converting it to read-only first
-	err = d.atomicLink(source, targetWriteable)
-	if err != nil {
-		t.Errorf("expected successful hard link to writeable target file (by converting to read-only), got error: %v", err)
+	// Make directories read-only to match Bazel behavior
+	if err := os.Chmod(sourceDir, 0555); err != nil {
+		t.Fatalf("failed to chmod sourceDir: %v", err)
+	}
+	if err := os.Chmod(targetWriteableDir, 0555); err != nil {
+		t.Fatalf("failed to chmod targetWriteableDir: %v", err)
+	}
+	if err := os.Chmod(targetReadOnlyDir, 0555); err != nil {
+		t.Fatalf("failed to chmod targetReadOnlyDir: %v", err)
 	}
 
-	// Verify targetWriteable is now read-only
+	// Defer restoring write permissions on directories so os.RemoveAll can clean up tmpDir
+	defer func() {
+		_ = os.Chmod(sourceDir, 0755)
+		_ = os.Chmod(targetWriteableDir, 0755)
+		_ = os.Chmod(targetReadOnlyDir, 0755)
+	}()
+
+	d := NewDeduplicator(Config{DryRun: false, PreferReflink: false})
+
+	// 1. Linking to writeable file in read-only directory should succeed by converting target to read-only
+	err = d.atomicLink(source, targetWriteable)
+	if err != nil {
+		t.Errorf("expected successful hard link to writeable target file in read-only dir, got error: %v", err)
+	}
+
+	// Verify targetWriteableDir permission is restored to read-only (0555 or mode without owner write bit)
+	infoDirWriteable, err := os.Stat(targetWriteableDir)
+	if err != nil {
+		t.Fatalf("failed to stat targetWriteableDir: %v", err)
+	}
+	if infoDirWriteable.Mode()&0200 != 0 {
+		t.Errorf("expected targetWriteableDir permissions to be restored to read-only, got mode %v", infoDirWriteable.Mode())
+	}
+
+	// Verify targetWriteable file itself is now read-only
 	infoWriteable, err := os.Stat(targetWriteable)
 	if err != nil {
 		t.Fatalf("failed to stat targetWriteable: %v", err)
 	}
 	if infoWriteable.Mode()&0222 != 0 {
-		t.Errorf("expected targetWriteable to be read-only after link, got mode %v", infoWriteable.Mode())
+		t.Errorf("expected targetWriteable file to be read-only, got mode %v", infoWriteable.Mode())
 	}
 
-	// 2. Linking to read-only file should succeed
+	// 2. Linking to read-only file in read-only directory should succeed
 	err = d.atomicLink(source, targetReadOnly)
 	if err != nil {
-		t.Errorf("expected successful hard link to read-only file, got error: %v", err)
+		t.Errorf("expected successful hard link to read-only file in read-only dir, got error: %v", err)
+	}
+
+	// Verify targetReadOnlyDir permission is restored to read-only
+	infoDirReadOnly, err := os.Stat(targetReadOnlyDir)
+	if err != nil {
+		t.Fatalf("failed to stat targetReadOnlyDir: %v", err)
+	}
+	if infoDirReadOnly.Mode()&0200 != 0 {
+		t.Errorf("expected targetReadOnlyDir permissions to be restored to read-only, got mode %v", infoDirReadOnly.Mode())
 	}
 
 	// Verify they all now share the same inode
