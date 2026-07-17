@@ -6,9 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
-	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -16,6 +14,9 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"bazelmop/pkg/bazelcas"
+	"bazelmop/pkg/bazelfiles"
 )
 
 // FileEntry represents filesystem metadata for a scanned file.
@@ -51,42 +52,22 @@ func NewDeduplicator(cfg Config) *Deduplicator {
 	}
 }
 
-// scanCAS walks the user repository cache CAS and indexes Inode -> Hash.
-func (d *Deduplicator) scanCAS(root string) error {
-	userEntries, err := os.ReadDir(root)
+// Scan walks the workspaces and builds the list of file entries using pkg/bazelfiles.
+func (d *Deduplicator) Scan(ctx context.Context, root string) ([]FileEntry, error) {
+	discovered, err := bazelfiles.Walk(ctx, bazelcas.RootCASPath(root),
+		bazelfiles.WithScanExternal(d.config.ScanExternal),
+		bazelfiles.WithScanBazelOut(d.config.ScanBazelOut),
+	)
 	if err != nil {
-		// Cache root might not exist if no builds were run
-		return nil
+		return nil, fmt.Errorf("failed to walk directories: %w", err)
 	}
 
-	for _, userEntry := range userEntries {
-		if !userEntry.IsDir() || !strings.HasPrefix(userEntry.Name(), "_bazel_") {
-			continue
-		}
-
-		userPath := filepath.Join(root, userEntry.Name())
-		repoCASPath := filepath.Join(userPath, "cache", "repos", "v1", "content_addressable", "sha256")
-
-		shaEntries, err := os.ReadDir(repoCASPath)
-		if err != nil {
-			continue
-		}
-
-		for _, shaEntry := range shaEntries {
-			if !shaEntry.IsDir() || len(shaEntry.Name()) != 64 {
-				continue
-			}
-
-			filePath := filepath.Join(repoCASPath, shaEntry.Name(), "file")
-			info, err := os.Lstat(filePath)
-			if err != nil {
-				continue
-			}
-
-			if info.Mode().IsRegular() {
-				if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-					d.casMap[stat.Ino] = shaEntry.Name()
-				}
+	// Index the RepoCache CAS files to d.casMap
+	for _, path := range discovered.RepoCacheCAS {
+		info, err := os.Lstat(path.String())
+		if err == nil {
+			if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+				d.casMap[stat.Ino] = path.Hash()
 			}
 		}
 	}
@@ -94,67 +75,43 @@ func (d *Deduplicator) scanCAS(root string) error {
 	if d.config.Verbose && len(d.casMap) > 0 {
 		fmt.Printf("Indexed %d CAS entries from repository cache\n", len(d.casMap))
 	}
-	return nil
-}
-
-// Scan walks the workspaces and builds the list of file entries.
-func (d *Deduplicator) Scan(ctx context.Context, root string) ([]FileEntry, error) {
-	// First index the CAS
-	if err := d.scanCAS(root); err != nil {
-		return nil, fmt.Errorf("failed to scan CAS: %w", err)
-	}
 
 	var entries []FileEntry
 
-	userEntries, err := os.ReadDir(root)
-	if err != nil {
-		return nil, err
+	// Process external dependencies
+	for _, path := range discovered.ExternalDeps {
+		info, err := os.Lstat(path.String())
+		if err == nil {
+			if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+				entry := FileEntry{
+					Path:  path.String(),
+					Size:  info.Size(),
+					Inode: stat.Ino,
+					Dev:   stat.Dev,
+				}
+				if hash, ok := d.casMap[stat.Ino]; ok {
+					entry.Hash = hash
+				}
+				entries = append(entries, entry)
+			}
+		}
 	}
 
-	for _, userEntry := range userEntries {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-
-		if !userEntry.IsDir() || !strings.HasPrefix(userEntry.Name(), "_bazel_") {
-			continue
-		}
-
-		userPath := filepath.Join(root, userEntry.Name())
-
-		// Read workspace MD5 base directories
-		workspaceEntries, err := os.ReadDir(userPath)
-		if err != nil {
-			continue
-		}
-
-		for _, wsEntry := range workspaceEntries {
-			if !wsEntry.IsDir() || len(wsEntry.Name()) != 32 {
-				continue
-			}
-
-			wsPath := filepath.Join(userPath, wsEntry.Name())
-
-			// 1. Scan external/ if configured
-			if d.config.ScanExternal {
-				targetDir := filepath.Join(wsPath, "external")
-				_ = d.scanDirectory(ctx, targetDir, &entries)
-			}
-
-			// 2. Scan bazel-out/ (located in execroot/[workspace]/bazel-out)
-			if d.config.ScanBazelOut {
-				execrootPath := filepath.Join(wsPath, "execroot")
-				execrootEntries, err := os.ReadDir(execrootPath)
-				if err == nil {
-					for _, execEntry := range execrootEntries {
-						if execEntry.IsDir() {
-							targetDir := filepath.Join(execrootPath, execEntry.Name(), "bazel-out")
-							_ = d.scanDirectory(ctx, targetDir, &entries)
-						}
-					}
+	// Process build outputs
+	for _, path := range discovered.BuildOutputs {
+		info, err := os.Lstat(path.String())
+		if err == nil {
+			if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+				entry := FileEntry{
+					Path:  path.String(),
+					Size:  info.Size(),
+					Inode: stat.Ino,
+					Dev:   stat.Dev,
 				}
+				if hash, ok := d.casMap[stat.Ino]; ok {
+					entry.Hash = hash
+				}
+				entries = append(entries, entry)
 			}
 		}
 	}
@@ -162,57 +119,6 @@ func (d *Deduplicator) Scan(ctx context.Context, root string) ([]FileEntry, erro
 	return entries, nil
 }
 
-// scanDirectory recursively walks a target directory and appends file entries.
-func (d *Deduplicator) scanDirectory(ctx context.Context, targetDir string, entries *[]FileEntry) error {
-	return filepath.WalkDir(targetDir, func(path string, de fs.DirEntry, err error) error {
-		if err != nil {
-			return nil // Skip walk errors
-		}
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		if de.IsDir() {
-			if (de.Name() == "external" || de.Name() == "node_modules") && strings.Contains(path, "/bazel-out/") && !d.config.ScanExternal {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		info, err := de.Info()
-		if err != nil {
-			return nil
-		}
-
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-
-		stat, ok := info.Sys().(*syscall.Stat_t)
-		if !ok {
-			return nil
-		}
-
-		// Build entry
-		entry := FileEntry{
-			Path:  path,
-			Size:  info.Size(),
-			Inode: stat.Ino,
-			Dev:   stat.Dev,
-		}
-
-		// Fast CAS lookup
-		if hash, ok := d.casMap[stat.Ino]; ok {
-			entry.Hash = hash
-		}
-
-		*entries = append(*entries, entry)
-		return nil
-	})
-}
 
 // SizeDev represents the key for grouping files by size and device.
 type SizeDev struct {
@@ -472,6 +378,7 @@ func (d *Deduplicator) printMarkdownReport(entries []FileEntry, matches []Equiva
 	var countBuildOut, countExternal int
 	var sizeBuildOut, sizeExternal int64
 	var reclaimBuildOut, reclaimExternal int64
+	var dupsBuildOut, dupsExternal int
 
 	// Track files per category
 	for _, entry := range entries {
@@ -484,13 +391,15 @@ func (d *Deduplicator) printMarkdownReport(entries []FileEntry, matches []Equiva
 		}
 	}
 
-	// Track reclaimable per category
+	// Track reclaimable and duplicates per category
 	for _, match := range matches {
 		for _, dup := range match.Duplicates {
 			if strings.Contains(dup.Path, "/bazel-out/") {
 				reclaimBuildOut += match.Representative.Size
+				dupsBuildOut++
 			} else if strings.Contains(dup.Path, "/external/") {
 				reclaimExternal += match.Representative.Size
+				dupsExternal++
 			}
 		}
 	}
@@ -502,6 +411,7 @@ func (d *Deduplicator) printMarkdownReport(entries []FileEntry, matches []Equiva
 		totalApparent += entry.Size
 	}
 	totalReclaimable := reclaimBuildOut + reclaimExternal
+	totalDups := dupsBuildOut + dupsExternal
 
 	pctBuildOut := 0.0
 	if sizeBuildOut > 0 {
@@ -518,19 +428,20 @@ func (d *Deduplicator) printMarkdownReport(entries []FileEntry, matches []Equiva
 
 	fmt.Println("\n# Bazel Cache Deduplication Report")
 	fmt.Println("\n## Executive Summary")
-	fmt.Println("\n| Category | Files Scanned | Apparent Size | Reclaimable Space | % Reclaimed |")
-	fmt.Println("| :--- | :--- | :--- | :--- | :--- |")
-	fmt.Printf("| **1. Locally Compiled Build Outputs (`bazel-out/`)** | %d | %s | %s | %.1f%% |\n",
-		countBuildOut, formatSize(sizeBuildOut), formatSize(reclaimBuildOut), pctBuildOut)
-	fmt.Printf("| **2. Extracted Repository Sources (`external/`)** | %d | %s | %s | %.1f%% |\n",
-		countExternal, formatSize(sizeExternal), formatSize(reclaimExternal), pctExternal)
-	fmt.Printf("| **Total Cache Profile** | **%d** | **%s** | **%s** | **%.1f%%** |\n",
-		totalScanned, formatSize(totalApparent), formatSize(totalReclaimable), pctTotal)
+	fmt.Println("\n| Category | Files Scanned | Apparent Size | Reclaimable Space | Duplicates | % Reclaimed |")
+	fmt.Println("| :--- | :--- | :--- | :--- | :--- | :--- |")
+	fmt.Printf("| **1. Locally Compiled Build Outputs (`bazel-out/`)** | %d | %s | %s | %d | %.1f%% |\n",
+		countBuildOut, formatSize(sizeBuildOut), formatSize(reclaimBuildOut), dupsBuildOut, pctBuildOut)
+	fmt.Printf("| **2. Extracted Repository Sources (`external/`)** | %d | %s | %s | %d | %.1f%% |\n",
+		countExternal, formatSize(sizeExternal), formatSize(reclaimExternal), dupsExternal, pctExternal)
+	fmt.Printf("| **Total Cache Profile** | **%d** | **%s** | **%s** | **%d** | **%.1f%%** |\n",
+		totalScanned, formatSize(totalApparent), formatSize(totalReclaimable), totalDups, pctTotal)
 
 	// Structure to hold metrics per workspace
 	type WSMetrics struct {
 		Apparent    int64
 		Reclaimable int64
+		DupCount    int
 	}
 	
 	wsBuildOut := make(map[string]*WSMetrics)
@@ -559,11 +470,13 @@ func (d *Deduplicator) printMarkdownReport(entries []FileEntry, matches []Equiva
 					wsBuildOut[ws] = &WSMetrics{}
 				}
 				wsBuildOut[ws].Reclaimable += match.Representative.Size
+				wsBuildOut[ws].DupCount++
 			} else if strings.Contains(dup.Path, "/external/") {
 				if wsExternal[ws] == nil {
 					wsExternal[ws] = &WSMetrics{}
 				}
 				wsExternal[ws].Reclaimable += match.Representative.Size
+				wsExternal[ws].DupCount++
 			}
 		}
 	}
@@ -572,6 +485,7 @@ func (d *Deduplicator) printMarkdownReport(entries []FileEntry, matches []Equiva
 		MD5         string
 		Apparent    int64
 		Reclaimable int64
+		DupCount    int
 	}
 
 	fmt.Println("\n## Detailed Category Views")
@@ -579,7 +493,12 @@ func (d *Deduplicator) printMarkdownReport(entries []FileEntry, matches []Equiva
 	if d.config.ScanBazelOut && len(wsBuildOut) > 0 {
 		var buildOutRows []WSRow
 		for ws, metrics := range wsBuildOut {
-			buildOutRows = append(buildOutRows, WSRow{MD5: ws, Apparent: metrics.Apparent, Reclaimable: metrics.Reclaimable})
+			buildOutRows = append(buildOutRows, WSRow{
+				MD5:         ws,
+				Apparent:    metrics.Apparent,
+				Reclaimable: metrics.Reclaimable,
+				DupCount:    metrics.DupCount,
+			})
 		}
 		sort.Slice(buildOutRows, func(i, j int) bool {
 			return buildOutRows[i].Reclaimable > buildOutRows[j].Reclaimable
@@ -587,21 +506,27 @@ func (d *Deduplicator) printMarkdownReport(entries []FileEntry, matches []Equiva
 
 		fmt.Println("\n### 1. Locally Compiled Build Outputs (`bazel-out/`)")
 		fmt.Println("*Local compilation artifacts, binaries, and libraries built inside target configurations.*")
-		fmt.Println("\n| Workspace MD5 | Apparent Size | Reclaimable Space | % Reclaimed |")
-		fmt.Println("| :--- | :--- | :--- | :--- |")
+		fmt.Println("\n| Workspace MD5 | Apparent Size | Reclaimable Space | Duplicates | % Reclaimed |")
+		fmt.Println("| :--- | :--- | :--- | :--- | :--- |")
 		for _, row := range buildOutRows {
 			pct := 0.0
 			if row.Apparent > 0 {
 				pct = float64(row.Reclaimable) * 100.0 / float64(row.Apparent)
 			}
-			fmt.Printf("| `%s` | %s | %s | %.1f%% |\n", truncateMD5(row.MD5), formatSize(row.Apparent), formatSize(row.Reclaimable), pct)
+			fmt.Printf("| `%s` | %s | %s | %d | %.1f%% |\n",
+				truncateMD5(row.MD5), formatSize(row.Apparent), formatSize(row.Reclaimable), row.DupCount, pct)
 		}
 	}
 
 	if d.config.ScanExternal && len(wsExternal) > 0 {
 		var externalRows []WSRow
 		for ws, metrics := range wsExternal {
-			externalRows = append(externalRows, WSRow{MD5: ws, Apparent: metrics.Apparent, Reclaimable: metrics.Reclaimable})
+			externalRows = append(externalRows, WSRow{
+				MD5:         ws,
+				Apparent:    metrics.Apparent,
+				Reclaimable: metrics.Reclaimable,
+				DupCount:    metrics.DupCount,
+			})
 		}
 		sort.Slice(externalRows, func(i, j int) bool {
 			return externalRows[i].Reclaimable > externalRows[j].Reclaimable
@@ -609,14 +534,15 @@ func (d *Deduplicator) printMarkdownReport(entries []FileEntry, matches []Equiva
 
 		fmt.Println("\n### 2. Extracted Repository Sources (`external/`)")
 		fmt.Println("*Decompressed third-party repository trees, SDKs, and toolchains downloaded from repository rules.*")
-		fmt.Println("\n| Workspace MD5 | Apparent Size | Reclaimable Space | % Reclaimed |")
-		fmt.Println("| :--- | :--- | :--- | :--- |")
+		fmt.Println("\n| Workspace MD5 | Apparent Size | Reclaimable Space | Duplicates | % Reclaimed |")
+		fmt.Println("| :--- | :--- | :--- | :--- | :--- |")
 		for _, row := range externalRows {
 			pct := 0.0
 			if row.Apparent > 0 {
 				pct = float64(row.Reclaimable) * 100.0 / float64(row.Apparent)
 			}
-			fmt.Printf("| `%s` | %s | %s | %.1f%% |\n", truncateMD5(row.MD5), formatSize(row.Apparent), formatSize(row.Reclaimable), pct)
+			fmt.Printf("| `%s` | %s | %s | %d | %.1f%% |\n",
+				truncateMD5(row.MD5), formatSize(row.Apparent), formatSize(row.Reclaimable), row.DupCount, pct)
 		}
 	}
 }
