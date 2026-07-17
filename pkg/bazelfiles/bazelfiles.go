@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"bazelmop/pkg/bazelcas"
+	"github.com/meta-programming/bazelmop/pkg/bazelcas"
 )
 
 // BuildOutputPath represents a strongly-typed path to a compiled build output

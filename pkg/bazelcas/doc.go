@@ -18,7 +18,7 @@
 //
 // # Usage Example
 //
-//	import "bazelmop/pkg/bazelcas"
+//	import "github.com/meta-programming/bazelmop/pkg/bazelcas"
 //
 //	// Instantiate the root cache path
 //	root := bazelcas.RootCASPath("/home/red/.cache/bazel")

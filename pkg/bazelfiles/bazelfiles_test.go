@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"bazelmop/pkg/bazelcas"
+	"github.com/meta-programming/bazelmop/pkg/bazelcas"
 )
 
 func TestPathMethods(t *testing.T) {

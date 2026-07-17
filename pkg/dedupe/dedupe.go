@@ -15,8 +15,8 @@ import (
 	"syscall"
 	"time"
 
-	"bazelmop/pkg/bazelcas"
-	"bazelmop/pkg/bazelfiles"
+	"github.com/meta-programming/bazelmop/pkg/bazelcas"
+	"github.com/meta-programming/bazelmop/pkg/bazelfiles"
 )
 
 // FileEntry represents filesystem metadata for a scanned file.

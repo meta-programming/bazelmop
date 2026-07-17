@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"bazelmop/pkg/dedupe"
+	"github.com/meta-programming/bazelmop/pkg/dedupe"
 )
 
 func main() {

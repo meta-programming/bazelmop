@@ -1,4 +1,4 @@
-module bazelmop
+module github.com/meta-programming/bazelmop
 
 go 1.25.0
 
