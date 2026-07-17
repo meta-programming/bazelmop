@@ -647,13 +647,9 @@ func (d *Deduplicator) atomicLink(source, target string) error {
 	if err != nil {
 		return err
 	}
-
 	tempPath := target + ".tmp-dedup"
 
-	// 1. Clean up any stale temp files from previous interrupted runs
-	_ = os.Remove(tempPath)
-
-	// 2. Temporarily make parent directory writable if it is read-only
+	// 1. Temporarily make parent directory writable if it is read-only
 	parentDir := filepath.Dir(target)
 	pInfo, err := os.Stat(parentDir)
 	if err == nil && pInfo.Mode()&0200 == 0 {
@@ -663,6 +659,9 @@ func (d *Deduplicator) atomicLink(source, target string) error {
 			}()
 		}
 	}
+
+	// 2. Clean up any stale temp files from previous interrupted runs (now safe to remove as parent is writable)
+	_ = os.Remove(tempPath)
 
 	// Attempt reflink if preferred
 	linked := false
@@ -676,9 +675,13 @@ func (d *Deduplicator) atomicLink(source, target string) error {
 	}
 
 	if !linked {
-		// Hard link safety gate
+		// Hard link safety gate: if the file has write permissions, we make the source
+		// read-only first. This makes hard-linking safe by preventing future write propagations.
 		if info.Mode()&0222 != 0 {
-			return fmt.Errorf("safety gate: file %s is writeable, skipping hard link", target)
+			err = os.Chmod(source, info.Mode() &^ 0222)
+			if err != nil {
+				return fmt.Errorf("failed to make source read-only for hardlink safety: %w", err)
+			}
 		}
 
 		err = os.Link(source, tempPath)

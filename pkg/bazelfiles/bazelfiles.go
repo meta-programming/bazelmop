@@ -235,6 +235,9 @@ func Walk(ctx context.Context, root bazelcas.RootCASPath, options ...WalkOption)
 					if de.IsDir() {
 						return nil
 					}
+					if strings.HasSuffix(path, ".tmp-dedup") {
+						return nil
+					}
 					info, err := de.Info()
 					if err == nil && info.Mode().IsRegular() {
 						discovered.ExternalDeps = append(discovered.ExternalDeps, ExternalDepPath(path))
@@ -266,6 +269,9 @@ func Walk(ctx context.Context, root bazelcas.RootCASPath, options ...WalkOption)
 									if (de.Name() == "external" || de.Name() == "node_modules") && !opts.scanExternal {
 										return filepath.SkipDir
 									}
+									return nil
+								}
+								if strings.HasSuffix(path, ".tmp-dedup") {
 									return nil
 								}
 								info, err := de.Info()

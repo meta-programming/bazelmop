@@ -34,10 +34,19 @@ func TestAtomicLinkSafetyGate(t *testing.T) {
 
 	d := NewDeduplicator(Config{DryRun: false, PreferReflink: false})
 
-	// 1. Linking to writeable file should fail due to safety gate (when using hard links)
+	// 1. Linking to writeable file should succeed by automatically converting it to read-only first
 	err = d.atomicLink(source, targetWriteable)
-	if err == nil {
-		t.Errorf("expected safety gate failure for writeable target file, got nil")
+	if err != nil {
+		t.Errorf("expected successful hard link to writeable target file (by converting to read-only), got error: %v", err)
+	}
+
+	// Verify targetWriteable is now read-only
+	infoWriteable, err := os.Stat(targetWriteable)
+	if err != nil {
+		t.Fatalf("failed to stat targetWriteable: %v", err)
+	}
+	if infoWriteable.Mode()&0222 != 0 {
+		t.Errorf("expected targetWriteable to be read-only after link, got mode %v", infoWriteable.Mode())
 	}
 
 	// 2. Linking to read-only file should succeed
@@ -46,21 +55,25 @@ func TestAtomicLinkSafetyGate(t *testing.T) {
 		t.Errorf("expected successful hard link to read-only file, got error: %v", err)
 	}
 
-	// Verify they now share the same inode
+	// Verify they all now share the same inode
 	infoSrc, err := os.Stat(source)
 	if err != nil {
 		t.Fatalf("failed to stat source: %v", err)
 	}
-	infoTarget, err := os.Stat(targetReadOnly)
+	infoReadOnly, err := os.Stat(targetReadOnly)
 	if err != nil {
-		t.Fatalf("failed to stat target: %v", err)
+		t.Fatalf("failed to stat targetReadOnly: %v", err)
 	}
 
 	statSrc := infoSrc.Sys().(*syscall.Stat_t)
-	statTarget := infoTarget.Sys().(*syscall.Stat_t)
+	statWriteable := infoWriteable.Sys().(*syscall.Stat_t)
+	statReadOnly := infoReadOnly.Sys().(*syscall.Stat_t)
 
-	if statSrc.Ino != statTarget.Ino {
-		t.Errorf("expected source and target to share inode, got %d and %d", statSrc.Ino, statTarget.Ino)
+	if statSrc.Ino != statWriteable.Ino {
+		t.Errorf("expected source and targetWriteable to share inode, got %d and %d", statSrc.Ino, statWriteable.Ino)
+	}
+	if statSrc.Ino != statReadOnly.Ino {
+		t.Errorf("expected source and targetReadOnly to share inode, got %d and %d", statSrc.Ino, statReadOnly.Ino)
 	}
 }
 
