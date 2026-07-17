@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -648,6 +649,20 @@ func (d *Deduplicator) atomicLink(source, target string) error {
 	}
 
 	tempPath := target + ".tmp-dedup"
+
+	// 1. Clean up any stale temp files from previous interrupted runs
+	_ = os.Remove(tempPath)
+
+	// 2. Temporarily make parent directory writable if it is read-only
+	parentDir := filepath.Dir(target)
+	pInfo, err := os.Stat(parentDir)
+	if err == nil && pInfo.Mode()&0200 == 0 {
+		if errChmod := os.Chmod(parentDir, pInfo.Mode()|0200); errChmod == nil {
+			defer func() {
+				_ = os.Chmod(parentDir, pInfo.Mode())
+			}()
+		}
+	}
 
 	// Attempt reflink if preferred
 	linked := false
