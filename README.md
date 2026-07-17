@@ -36,7 +36,7 @@ Launch the background daemon and host the offline, real-time Server-Sent Events 
 
 ---
 
-## Example Abbreviated Output
+## Example CLI Output (Abbreviated)
 
 ```markdown
 # Bazel Cache Deduplication Report
@@ -57,6 +57,12 @@ Launch the background daemon and host the offline, real-time Server-Sent Events 
 | `2041e6ce...` | 4.65 GB | 3.44 GB | 26,341 | 73.8% |
 | `b1f5b40a...` | 4.75 GB | 3.36 GB | 26,527 | 70.6% |
 ```
+
+### Example Web Dashboard Output
+
+![Example Web Dashboard Output](docs/images/web-dashboard.png)
+
+*Caption: The web dashboard view runs only in `daemon` mode when the `--web` flag is explicitly enabled.*
 
 ---
 
