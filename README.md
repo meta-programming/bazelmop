@@ -113,18 +113,18 @@ Inside this output user root, space is consumed by three primary categories:
 
 | Operation | Reclaims Space? | Impact on Next Build | Scope | Non-destructive? |
 | :--- | :--- | :--- | :--- | :--- |
-| **`bazel clean`** | Yes (local only) | Re-compiles all local targets from scratch | Current workspace | No (deletes local builds) |
-| **`bazel clean --expunge`** | Yes (moderate) | Re-downloads, re-extracts, and re-compiles everything | Current workspace | No (wipes output base) |
-| **`bazelmop`** | **Yes (massive)** | **Zero impact (builds stay 100% warm/instant)** | **All workspaces** | **Yes (non-destructive)** |
+| **`bazel clean`** | Yes (local build output only) | Re-compiles all local targets from scratch | Current workspace | No (deletes local builds) |
+| **`bazel clean --expunge`** | Yes (100% of workspace) | Re-downloads, re-extracts, and re-compiles everything | Current workspace | No (wipes output base) |
+| **`bazelmop`** | **Yes (redundant duplicates only)** | **Zero impact (builds stay 100% warm/instant)** | **All workspaces** | **Yes (non-destructive)** |
 
 #### 1. `bazel clean`
 `bazel clean` merely deletes the `bazel-out/` folder of the **current active workspace**. It does not clean up external repositories, does not touch other branches, and forces your very next build in that workspace to compile all local targets from scratch, wasting developer time.
 
 #### 2. `bazel clean --expunge`
-`bazel clean --expunge` completely deletes the output base directory for the current workspace. This includes all extracted external repositories, downloaded tools, and cached metadata. The next build will have to re-download the toolchains from the internet and re-extract them, consuming high network bandwidth and causing a massive build latency penalty.
+`bazel clean --expunge` completely deletes the output base directory for the current workspace. This reclaims 100% of the space for that workspace, but it destroys all compiled targets, metadata, and extracted repositories. The next build will have to re-download toolchains from the internet and re-extract them, causing a massive build latency penalty.
 
 #### 3. `bazelmop`
-`bazelmop` is **non-destructive**. It does not delete any files or wipe caches. Instead, it inspects all workspaces and merges identical files by replacing them with hard links or reflinks. Your build files remain exactly where they are—fully visible to Bazel—meaning **your next builds will be warm and instantaneous**, but you get the space recovery of an expunge across all workspaces combined.
+`bazelmop` is **non-destructive**. It does not wipe caches or delete active targets. Instead, it inspects all workspaces and merges identical files by replacing duplicates with links. While it reclaims less raw space than a complete expunge (since it keeps the active targets on disk), it keeps your next builds **100% warm and instantaneous** while still recovering significant storage across all workspaces combined.
 
 ---
 
