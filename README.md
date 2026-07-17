@@ -107,16 +107,6 @@ Inside this output user root, space is consumed by three primary categories:
 
 ---
 
-### Footnotes & Citations
-
-[^1]: **Output Directory Layout**: Officially documented at [Bazel Output Directory Layout](https://bazel.build/remote/output-directory-layout). The layout separates the `installBase` (Bazel binaries) from the `outputBase` (workspace build areas).
-[^2]: **Repository Cache**: Refer to [Running Builds with Bazel](https://bazel.build/run/build) details in the user manual. The cache stores downloaded archives and is shared across all workspaces.
-[^3]: **External Dependencies**: Bazel handles external dependencies by running repository rules and placing the results under the `external/` folder of each workspace output base. See [Bazel External Dependencies](https://bazel.build/concepts/dependencies) documentation.
-[^4]: **Experimental Hardlinks**: Bazel provides a flag `--experimental_repository_cache_hardlinks` to hard-link files from the central repository cache to a workspace's `external/` folder on cache hits. However, this is disabled by default and only shares links *within* the same workspace output base, not across different workspace directories. See the flag in the [Bazel Command-Line Reference](https://bazel.build/reference/command-line-reference).
-[^5]: **Execution Root and bazel-out**: The execution root is the working directory for action execution. It contains symlinks to inputs and the `bazel-out/` directory for outputs. Refer to [Bazel Execution Root Layout](https://bazel.build/remote/output-directory-layout#layout-diagram) for the exact path diagrams.
-
----
-
 ## FAQ
 
 ### How does `bazelmop` compare to `bazel clean` and `bazel clean --expunge`?
@@ -135,3 +125,13 @@ Inside this output user root, space is consumed by three primary categories:
 
 #### 3. `bazelmop`
 `bazelmop` is **non-destructive**. It does not delete any files or wipe caches. Instead, it inspects all workspaces and merges identical files by replacing them with hard links or reflinks. Your build files remain exactly where they are—fully visible to Bazel—meaning **your next builds will be warm and instantaneous**, but you get the space recovery of an expunge across all workspaces combined.
+
+---
+
+### Footnotes & Citations
+
+[^1]: **Output Directory Layout**: Officially documented at [Bazel Output Directory Layout](https://bazel.build/remote/output-directory-layout). The layout separates the `installBase` (Bazel binaries) from the `outputBase` (workspace build areas).
+[^2]: **Repository Cache**: Refer to [Running Builds with Bazel](https://bazel.build/run/build) details in the user manual. The cache stores downloaded archives and is shared across all workspaces.
+[^3]: **External Dependencies**: Bazel handles external dependencies by running repository rules and placing the results under the `external/` folder of each workspace output base. See [Bazel External Dependencies](https://bazel.build/concepts/dependencies) documentation.
+[^4]: **Experimental Hardlinks**: Bazel provides a flag `--experimental_repository_cache_hardlinks` to hard-link files from the central repository cache to a workspace's `external/` folder on cache hits. However, this is disabled by default and only shares links *within* the same workspace output base, not across different workspace directories. See the flag in the [Bazel Command-Line Reference](https://bazel.build/reference/command-line-reference).
+[^5]: **Execution Root and bazel-out**: The execution root is the working directory for action execution. It contains symlinks to inputs and the `bazel-out/` directory for outputs. Refer to [Bazel Execution Root Layout](https://bazel.build/remote/output-directory-layout#layout-diagram) for the exact path diagrams.
