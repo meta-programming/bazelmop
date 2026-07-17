@@ -76,7 +76,7 @@ func main() {
 			runDaemon()
 		},
 	}
-	daemonCmd.Flags().DurationVar(&daemonInterval, "interval", 1*time.Hour, "Daemon check interval (e.g., 1h, 30m)")
+	daemonCmd.Flags().DurationVar(&daemonInterval, "interval", 24*time.Hour, "Daemon check interval (e.g., 1h, 30m)")
 	daemonCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Simulate deduplication and report savings without modifying files")
 	daemonCmd.Flags().BoolVar(&webEnabled, "web", false, "Enable the web report dashboard server")
 	daemonCmd.Flags().StringVar(&webHost, "web-host", "localhost", "Binding address for the web dashboard")
