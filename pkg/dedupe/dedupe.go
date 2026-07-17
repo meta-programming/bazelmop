@@ -156,7 +156,7 @@ func computeSHA256(path string) (string, error) {
 }
 
 // Deduplicate executes matching and link replacement.
-func (d *Deduplicator) Deduplicate(ctx context.Context, entries []FileEntry) error {
+func (d *Deduplicator) Deduplicate(ctx context.Context, entries []FileEntry) (string, error) {
 	// 1. Group by (Size, Dev)
 	sizeGroups := make(map[SizeDev][]int) // value holds indices in the entries array
 	for i, entry := range entries {
@@ -242,7 +242,7 @@ func (d *Deduplicator) Deduplicate(ctx context.Context, entries []FileEntry) err
 	// Handle cancellations
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return "", ctx.Err()
 	default:
 	}
 
@@ -262,7 +262,7 @@ func (d *Deduplicator) Deduplicate(ctx context.Context, entries []FileEntry) err
 }
 
 // processMatches groups identical files and executes link swaps.
-func (d *Deduplicator) processMatches(ctx context.Context, entries []FileEntry) error {
+func (d *Deduplicator) processMatches(ctx context.Context, entries []FileEntry) (string, error) {
 	// Group by (Size, Dev, Hash)
 	groups := make(map[HashKey][]FileEntry)
 	for _, entry := range entries {
@@ -318,12 +318,13 @@ func (d *Deduplicator) processMatches(ctx context.Context, entries []FileEntry) 
 		totalReclaimable += int64(len(match.Duplicates)) * match.Representative.Size
 	}
 
-	// Generate and print reports
-	d.printMarkdownReport(entries, matchesToLink)
+	// Generate report
+	report := d.generateMarkdownReport(entries, matchesToLink)
+	fmt.Println(report)
 
 	if d.config.DryRun {
 		fmt.Println("\n[Dry Run] No files were modified.")
-		return nil
+		return report, nil
 	}
 
 	// Execute linking
@@ -333,7 +334,7 @@ func (d *Deduplicator) processMatches(ctx context.Context, entries []FileEntry) 
 		for _, dup := range match.Duplicates {
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return report, ctx.Err()
 			default:
 			}
 
@@ -348,7 +349,7 @@ func (d *Deduplicator) processMatches(ctx context.Context, entries []FileEntry) 
 	}
 
 	fmt.Println("Deduplication completed successfully!")
-	return nil
+	return report, nil
 }
 
 // extractWorkspace parses the username and workspace MD5 hash from the file path.
@@ -374,7 +375,9 @@ func truncateMD5(s string) string {
 	return s
 }
 
-func (d *Deduplicator) printMarkdownReport(entries []FileEntry, matches []EquivalenceClass) {
+func (d *Deduplicator) generateMarkdownReport(entries []FileEntry, matches []EquivalenceClass) string {
+	var sb strings.Builder
+
 	var countBuildOut, countExternal int
 	var sizeBuildOut, sizeExternal int64
 	var reclaimBuildOut, reclaimExternal int64
@@ -426,15 +429,15 @@ func (d *Deduplicator) printMarkdownReport(entries []FileEntry, matches []Equiva
 		pctTotal = float64(totalReclaimable) * 100.0 / float64(totalApparent)
 	}
 
-	fmt.Println("\n# Bazel Cache Deduplication Report")
-	fmt.Println("\n## Executive Summary")
-	fmt.Println("\n| Category | Files Scanned | Apparent Size | Reclaimable Space | Duplicates | % Reclaimed |")
-	fmt.Println("| :--- | :--- | :--- | :--- | :--- | :--- |")
-	fmt.Printf("| **1. Locally Compiled Build Outputs (`bazel-out/`)** | %d | %s | %s | %d | %.1f%% |\n",
+	sb.WriteString("# Bazel Cache Deduplication Report\n\n")
+	sb.WriteString("## Executive Summary\n\n")
+	sb.WriteString("| Category | Files Scanned | Apparent Size | Reclaimable Space | Duplicates | % Reclaimed |\n")
+	sb.WriteString("| :--- | :--- | :--- | :--- | :--- | :--- |\n")
+	fmt.Fprintf(&sb, "| **1. Locally Compiled Build Outputs (`bazel-out/`)** | %d | %s | %s | %d | %.1f%% |\n",
 		countBuildOut, formatSize(sizeBuildOut), formatSize(reclaimBuildOut), dupsBuildOut, pctBuildOut)
-	fmt.Printf("| **2. Extracted Repository Sources (`external/`)** | %d | %s | %s | %d | %.1f%% |\n",
+	fmt.Fprintf(&sb, "| **2. Extracted Repository Sources (`external/`)** | %d | %s | %s | %d | %.1f%% |\n",
 		countExternal, formatSize(sizeExternal), formatSize(reclaimExternal), dupsExternal, pctExternal)
-	fmt.Printf("| **Total Cache Profile** | **%d** | **%s** | **%s** | **%d** | **%.1f%%** |\n",
+	fmt.Fprintf(&sb, "| **Total Cache Profile** | **%d** | **%s** | **%s** | **%d** | **%.1f%%** |\n",
 		totalScanned, formatSize(totalApparent), formatSize(totalReclaimable), totalDups, pctTotal)
 
 	// Structure to hold metrics per workspace
@@ -488,7 +491,7 @@ func (d *Deduplicator) printMarkdownReport(entries []FileEntry, matches []Equiva
 		DupCount    int
 	}
 
-	fmt.Println("\n## Detailed Category Views")
+	sb.WriteString("\n## Detailed Category Views\n")
 
 	if d.config.ScanBazelOut && len(wsBuildOut) > 0 {
 		var buildOutRows []WSRow
@@ -504,16 +507,16 @@ func (d *Deduplicator) printMarkdownReport(entries []FileEntry, matches []Equiva
 			return buildOutRows[i].Reclaimable > buildOutRows[j].Reclaimable
 		})
 
-		fmt.Println("\n### 1. Locally Compiled Build Outputs (`bazel-out/`)")
-		fmt.Println("*Local compilation artifacts, binaries, and libraries built inside target configurations.*")
-		fmt.Println("\n| Workspace MD5 | Apparent Size | Reclaimable Space | Duplicates | % Reclaimed |")
-		fmt.Println("| :--- | :--- | :--- | :--- | :--- |")
+		sb.WriteString("\n### 1. Locally Compiled Build Outputs (`bazel-out/`)\n")
+		sb.WriteString("*Local compilation artifacts, binaries, and libraries built inside target configurations.*\n\n")
+		sb.WriteString("| Workspace MD5 | Apparent Size | Reclaimable Space | Duplicates | % Reclaimed |\n")
+		sb.WriteString("| :--- | :--- | :--- | :--- | :--- |\n")
 		for _, row := range buildOutRows {
 			pct := 0.0
 			if row.Apparent > 0 {
 				pct = float64(row.Reclaimable) * 100.0 / float64(row.Apparent)
 			}
-			fmt.Printf("| `%s` | %s | %s | %d | %.1f%% |\n",
+			fmt.Fprintf(&sb, "| `%s` | %s | %s | %d | %.1f%% |\n",
 				truncateMD5(row.MD5), formatSize(row.Apparent), formatSize(row.Reclaimable), row.DupCount, pct)
 		}
 	}
@@ -532,19 +535,21 @@ func (d *Deduplicator) printMarkdownReport(entries []FileEntry, matches []Equiva
 			return externalRows[i].Reclaimable > externalRows[j].Reclaimable
 		})
 
-		fmt.Println("\n### 2. Extracted Repository Sources (`external/`)")
-		fmt.Println("*Decompressed third-party repository trees, SDKs, and toolchains downloaded from repository rules.*")
-		fmt.Println("\n| Workspace MD5 | Apparent Size | Reclaimable Space | Duplicates | % Reclaimed |")
-		fmt.Println("| :--- | :--- | :--- | :--- | :--- |")
+		sb.WriteString("\n### 2. Extracted Repository Sources (`external/`)\n")
+		sb.WriteString("*Decompressed third-party repository trees, SDKs, and toolchains downloaded from repository rules.*\n\n")
+		sb.WriteString("| Workspace MD5 | Apparent Size | Reclaimable Space | Duplicates | % Reclaimed |\n")
+		sb.WriteString("| :--- | :--- | :--- | :--- | :--- |\n")
 		for _, row := range externalRows {
 			pct := 0.0
 			if row.Apparent > 0 {
 				pct = float64(row.Reclaimable) * 100.0 / float64(row.Apparent)
 			}
-			fmt.Printf("| `%s` | %s | %s | %d | %.1f%% |\n",
+			fmt.Fprintf(&sb, "| `%s` | %s | %s | %d | %.1f%% |\n",
 				truncateMD5(row.MD5), formatSize(row.Apparent), formatSize(row.Reclaimable), row.DupCount, pct)
 		}
 	}
+
+	return sb.String()
 }
 
 

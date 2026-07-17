@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/meta-programming/bazelmop/pkg/dedupe"
+	"github.com/meta-programming/bazelmop/pkg/web"
 )
 
 var (
@@ -27,6 +28,10 @@ var (
 	verbose         bool
 	dryRun          bool
 	daemonInterval  time.Duration
+
+	webEnabled bool
+	webHost    string
+	webPort    string
 )
 
 func main() {
@@ -72,6 +77,9 @@ func main() {
 		},
 	}
 	daemonCmd.Flags().DurationVar(&daemonInterval, "interval", 1*time.Hour, "Daemon check interval (e.g., 1h, 30m)")
+	daemonCmd.Flags().BoolVar(&webEnabled, "web", false, "Enable the web report dashboard server")
+	daemonCmd.Flags().StringVar(&webHost, "web-host", "localhost", "Binding address for the web dashboard")
+	daemonCmd.Flags().StringVar(&webPort, "web-port", "8080", "Port for the web dashboard server")
 
 	rootCmd.AddCommand(cleanCmd)
 	rootCmd.AddCommand(reportCmd)
@@ -153,7 +161,7 @@ func runDedupe(isDryRun bool) {
 
 	fmt.Println("Matching and calculating savings...")
 	matchStart := time.Now()
-	err = d.Deduplicate(ctx, entries)
+	_, err = d.Deduplicate(ctx, entries)
 	if err != nil {
 		if ctx.Err() != nil {
 			return
@@ -182,10 +190,23 @@ func runDaemon() {
 	fmt.Printf("Scan external:  %v\n", config.ScanExternal)
 	fmt.Printf("Scan bazel-out: %v\n", config.ScanBazelOut)
 	fmt.Printf("Min Report Sz:  %d MB\n", minReportSizeMB)
+	if webEnabled {
+		fmt.Printf("Web Dashboard:  http://%s:%s\n", webHost, webPort)
+	}
 	fmt.Println("=========================================================")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	var webSrv *web.Server
+	if webEnabled {
+		webSrv = web.NewServer(webHost, webPort)
+		go func() {
+			if err := webSrv.Start(ctx); err != nil {
+				log.Printf("Web server error: %v", err)
+			}
+		}()
+	}
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -195,7 +216,7 @@ func runDaemon() {
 		cancel()
 	}()
 
-	runner := func() {
+	runner := func(nextScan time.Time) {
 		start := time.Now()
 		fmt.Printf("\n[%s] Starting scheduled scan...\n", start.Format(time.RFC3339))
 		d := dedupe.NewDeduplicator(config)
@@ -211,10 +232,14 @@ func runDaemon() {
 
 		fmt.Printf("Scan completed in %v. Found %d candidate files.\n", time.Since(start), len(entries))
 		if len(entries) == 0 {
+			// Even if 0 files, update next scan timer on dashboard
+			if webEnabled && webSrv != nil {
+				webSrv.UpdateNextScan(nextScan)
+			}
 			return
 		}
 
-		err = d.Deduplicate(ctx, entries)
+		report, err := d.Deduplicate(ctx, entries)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -222,10 +247,14 @@ func runDaemon() {
 			log.Printf("Error: Deduplication failed: %v", err)
 			return
 		}
+		if webEnabled && webSrv != nil {
+			webSrv.UpdateReport(report, nextScan)
+		}
 		fmt.Printf("Completed scheduled deduplication.\n")
 	}
 
-	runner() // Run first check immediately
+	nextScan := time.Now().Add(daemonInterval)
+	runner(nextScan) // Run first check immediately
 
 	ticker := time.NewTicker(daemonInterval)
 	defer ticker.Stop()
@@ -235,7 +264,8 @@ func runDaemon() {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			runner()
+			nextScan = time.Now().Add(daemonInterval)
+			runner(nextScan)
 		}
 	}
 }

@@ -100,7 +100,7 @@ func TestDeduplicateDryRun(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	err = d.Deduplicate(ctx, entries)
+	_, err = d.Deduplicate(ctx, entries)
 	if err != nil {
 		t.Fatalf("Deduplicate failed: %v", err)
 	}
