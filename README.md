@@ -99,8 +99,8 @@ Inside this output user root, space is consumed by three primary categories:
 ### 3. Locally Compiled Build Outputs (`[workspace_hash]/execroot/[name]/bazel-out/`)[^5]
 * **What it is**: The objects (`.o`, `.a`), libraries, generated files, and deployable archives (`.jar`, `.war`) compiled during a local build.
 * **Are these symlinks?**: 
-  * While Bazel creates symlinks (like `bazel-out` and `bazel-bin`) inside your local development directory (e.g., `~/ws/my-project/bazel-out`) to point to the output base, the files **inside the physical output base `bazel-out` directory are actual, regular files** containing compiled bytes.
-  * During action execution, Bazel uses a sandbox "symlink forest" for inputs, but compilers write output targets back as real, regular files on disk. `bazelmop` specifically targets these regular files and ignores symlinks.
+  * While Bazel creates symlinks in your local repository directory (like `~/ws/my-project/bazel-out`) to point to the output base, the files **inside the physical output base `bazel-out` directory are typically regular files**.
+  * Depending on the build action, actions *can* output symlinks inside `bazel-out` (e.g., symlinked assets, node package layouts). To ensure safety, `bazelmop` explicitly checks if each file is a **regular file** (using `info.Mode().IsRegular()`) and ignores directories, symlinks, or special devices.
 * **Why it duplicates**:
   * **Across configurations**: Building the same target under different build configurations (e.g., debug vs optimized, or target platform transitions like `k8-fastbuild` and `k8-opt-exec`) creates separate output folders.
   * **Across workspaces**: Checking out different branches into separate directories causes Bazel to compile the identical toolchain wrappers and static libraries repeatedly across workspaces.
