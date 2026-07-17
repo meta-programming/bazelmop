@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -175,6 +176,9 @@ func (d *Deduplicator) scanDirectory(ctx context.Context, targetDir string, entr
 		}
 
 		if de.IsDir() {
+			if (de.Name() == "external" || de.Name() == "node_modules") && strings.Contains(path, "/bazel-out/") && !d.config.ScanExternal {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 
@@ -506,14 +510,34 @@ func (d *Deduplicator) printWorkspaceBreakdown(entries []FileEntry, matches []Eq
 
 func (d *Deduplicator) printLargeDuplicates(matches []EquivalenceClass) {
 	fmt.Println("\n=== Large Duplicates ===")
-	count := 0
+	
+	var filtered []EquivalenceClass
 	for _, match := range matches {
 		totalSize := match.Representative.Size * int64(len(match.Duplicates)+1)
-		if totalSize < d.config.MinReportSize {
-			continue
+		if totalSize >= d.config.MinReportSize {
+			filtered = append(filtered, match)
 		}
+	}
 
-		count++
+	if len(filtered) == 0 {
+		fmt.Println("No duplicate groups exceed the minimum report size threshold.")
+		return
+	}
+
+	// Sort by total duplicate reclaimable size descending
+	sort.Slice(filtered, func(i, j int) bool {
+		sizeI := filtered[i].Representative.Size * int64(len(filtered[i].Duplicates))
+		sizeJ := filtered[j].Representative.Size * int64(len(filtered[j].Duplicates))
+		return sizeI > sizeJ
+	})
+
+	limit := 20
+	if len(filtered) < limit {
+		limit = len(filtered)
+	}
+
+	for i := 0; i < limit; i++ {
+		match := filtered[i]
 		fmt.Printf("Large Duplicate Group: sha256:%s (Size: %s, %d instances)\n",
 			match.Representative.Hash, formatSize(match.Representative.Size), len(match.Duplicates)+1)
 
@@ -525,8 +549,8 @@ func (d *Deduplicator) printLargeDuplicates(matches []EquivalenceClass) {
 		}
 	}
 
-	if count == 0 {
-		fmt.Println("No duplicate groups exceed the minimum report size threshold.")
+	if len(filtered) > limit {
+		fmt.Printf("\n... and %d more large duplicate groups truncated.\n", len(filtered)-limit)
 	}
 }
 
