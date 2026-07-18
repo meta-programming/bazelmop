@@ -39,6 +39,19 @@ Launch the background daemon and host the offline, real-time Server-Sent Events 
 
 ---
 
+## OS & Filesystem Support
+
+* **Linux**: Fully supported.
+  * Supports copy-on-write **reflink clones** on Copy-on-Write filesystems (e.g., Btrfs, XFS).
+  * Automatically falls back to **hard links** on standard filesystems (e.g., ext4).
+* **macOS**: Fully supported.
+  * Supports copy-on-write **reflink clones** (via the native `clonefile(2)` system call) on APFS filesystems.
+  * Automatically falls back to **hard links** on older filesystems (e.g., HFS+).
+* **Windows**: Experimental/Partial support.
+  * Windows NTFS supports hard-linking, but Unix-style directory write permissions toggling (needed to bypass Bazel's read-only directories) behaves differently. Production usage is recommended on Linux and macOS.
+
+---
+
 ## Example CLI Output (Abbreviated)
 
 ```markdown
