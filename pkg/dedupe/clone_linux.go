@@ -24,5 +24,10 @@ func cloneFile(src, dst string) error {
 	defer dstFile.Close()
 
 	// Invoke the FICLONE ioctl system call
-	return unix.IoctlFileClone(int(dstFile.Fd()), int(srcFile.Fd()))
+	err = unix.IoctlFileClone(int(dstFile.Fd()), int(srcFile.Fd()))
+	if err != nil {
+		_ = os.Remove(dst)
+		return err
+	}
+	return nil
 }

@@ -343,6 +343,7 @@ func (d *Deduplicator) processMatches(ctx context.Context, entries []FileEntry) 
 	// Execute linking
 	d.updateProgress("Performing deduplication linking...")
 	fmt.Printf("\nPerforming deduplication linking for %d groups...\n", len(matchesToLink))
+	var successCount, failCount int64
 	for _, match := range matchesToLink {
 		source := match.Representative.Path
 		for _, dup := range match.Duplicates {
@@ -356,14 +357,20 @@ func (d *Deduplicator) processMatches(ctx context.Context, entries []FileEntry) 
 			// Perform link atomically
 			err := d.atomicLink(source, dup.Path)
 			if err != nil {
+				failCount++
 				if d.config.Verbose {
 					fmt.Printf("Warning: failed to link %s to %s: %v\n", dup.Path, source, err)
 				}
+			} else {
+				successCount++
 			}
 		}
 	}
 
-	fmt.Println("Deduplication completed successfully!")
+	fmt.Printf("Deduplication completed: %s links created, %s failed.\n", formatNumber(successCount), formatNumber(failCount))
+	if failCount > 0 {
+		fmt.Printf("Warning: %s linking operations failed. Run with --verbose to view details.\n", formatNumber(failCount))
+	}
 	d.updateProgress("Idle")
 	return report, nil
 }
