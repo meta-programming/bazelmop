@@ -52,6 +52,10 @@ type Instance struct {
 	ItemCount int64 `json:"item_count"`
 	// LastModified is the maximum mtime timestamp across all files in the instance.
 	LastModified time.Time `json:"last_modified"`
+	// LastBuildTime is the maximum mtime timestamp of build profile, action cache, or server start files.
+	LastBuildTime time.Time `json:"last_build_time"`
+	// LastTestTime is the maximum mtime timestamp of test log and test xml result files.
+	LastTestTime time.Time `json:"last_test_time"`
 }
 
 // GCOptions defines filtering criteria for garbage collection candidate selection.
@@ -249,6 +253,11 @@ func scanInstance(sys fs.FS, rootPath, relDir, id string, instType InstanceType,
 		Status:        status,
 	}
 
+	if instType == TypeOutputBase {
+		inst.LastBuildTime = resolveLastBuildTime(sys, relDir)
+		inst.LastTestTime = resolveLastTestTime(sys, relDir)
+	}
+
 	_ = fs.WalkDir(sys, relDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -277,6 +286,143 @@ func scanInstance(sys fs.FS, rootPath, relDir, id string, instType InstanceType,
 	})
 
 	return inst
+}
+
+// resolveLastBuildTime calculates the maximum mtime of command.profile.gz, action_cache,
+// lock, server/server.starttime, and command-*.profile.gz inside an output base.
+func resolveLastBuildTime(sys fs.FS, relDir string) time.Time {
+	var maxTime time.Time
+
+	fixedPaths := []string{
+		filepath.Join(relDir, "command.profile.gz"),
+		filepath.Join(relDir, "action_cache"),
+		filepath.Join(relDir, "lock"),
+		filepath.Join(relDir, "server", "server.starttime"),
+	}
+
+	for _, p := range fixedPaths {
+		if info, err := fs.Stat(sys, p); err == nil {
+			if info.ModTime().After(maxTime) {
+				maxTime = info.ModTime()
+			}
+		}
+	}
+
+	if entries, err := fs.ReadDir(sys, relDir); err == nil {
+		for _, entry := range entries {
+			if matched, _ := filepath.Match("command-*.profile.gz", entry.Name()); matched {
+				if info, err := entry.Info(); err == nil {
+					if info.ModTime().After(maxTime) {
+						maxTime = info.ModTime()
+					}
+				}
+			}
+		}
+	}
+
+	return maxTime
+}
+
+// resolveLastTestTime scans execroot/*/bazel-out/*/testlogs (or bazel-out/*/testlogs)
+// for the maximum mtime across test.log and test.xml files.
+func resolveLastTestTime(sys fs.FS, relDir string) time.Time {
+	var maxTime time.Time
+	seenDirs := make(map[string]bool)
+
+	var testlogDirs []string
+	addDir := func(p string) {
+		if seenDirs[p] {
+			return
+		}
+		if info, err := fs.Stat(sys, p); err == nil && info.IsDir() {
+			seenDirs[p] = true
+			testlogDirs = append(testlogDirs, p)
+		}
+	}
+
+	// 1. execroot/*/bazel-out/*/testlogs (and execroot/*/testlogs)
+	execrootPath := filepath.Join(relDir, "execroot")
+	if wsEntries, err := fs.ReadDir(sys, execrootPath); err == nil {
+		for _, ws := range wsEntries {
+			if !ws.IsDir() {
+				continue
+			}
+			wsPath := filepath.Join(execrootPath, ws.Name())
+			bazelOut := filepath.Join(wsPath, "bazel-out")
+			if cfgEntries, err := fs.ReadDir(sys, bazelOut); err == nil {
+				for _, cfg := range cfgEntries {
+					if !cfg.IsDir() {
+						continue
+					}
+					addDir(filepath.Join(bazelOut, cfg.Name(), "testlogs"))
+				}
+			}
+			addDir(filepath.Join(wsPath, "testlogs"))
+		}
+	}
+
+	// 2. bazel-out/*/testlogs (and bazel-out/testlogs)
+	bazelOutPath := filepath.Join(relDir, "bazel-out")
+	if cfgEntries, err := fs.ReadDir(sys, bazelOutPath); err == nil {
+		for _, cfg := range cfgEntries {
+			if !cfg.IsDir() {
+				continue
+			}
+			addDir(filepath.Join(bazelOutPath, cfg.Name(), "testlogs"))
+		}
+	}
+	addDir(filepath.Join(bazelOutPath, "testlogs"))
+
+	for _, dir := range testlogDirs {
+		_ = fs.WalkDir(sys, dir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			if !d.IsDir() && (d.Name() == "test.log" || d.Name() == "test.xml") {
+				if info, err := d.Info(); err == nil {
+					if info.ModTime().After(maxTime) {
+						maxTime = info.ModTime()
+					}
+				}
+			}
+			return nil
+		})
+	}
+
+	return maxTime
+}
+
+// FormatRelativeTime formats a time.Time value into a relative time string (e.g. "3h ago", "2d ago", or "Never").
+func FormatRelativeTime(t time.Time, now time.Time) string {
+	if t.IsZero() {
+		return "Never"
+	}
+	diff := now.Sub(t)
+	if diff < 0 {
+		return "Just now"
+	}
+	secs := int64(diff.Seconds())
+	if secs < 60 {
+		return "Just now"
+	}
+	mins := secs / 60
+	if mins < 60 {
+		return fmt.Sprintf("%dm ago", mins)
+	}
+	hours := mins / 60
+	if hours < 24 {
+		return fmt.Sprintf("%dh ago", hours)
+	}
+	days := hours / 24
+	if days < 30 {
+		return fmt.Sprintf("%dd ago", days)
+	}
+	months := days / 30
+	if months < 12 {
+		return fmt.Sprintf("%dmo ago", months)
+	}
+	years := days / 365
+	return fmt.Sprintf("%dy ago", years)
 }
 
 // SortInstances sorts instances in-place by the specified field ("lru", "size", "id").

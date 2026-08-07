@@ -357,8 +357,29 @@ func runOutputBasesList(format string, orphanedOnly bool) {
 
 	bazelcas.SortInstances(filtered, "lru")
 
+	now := time.Now()
+
 	if strings.ToLower(format) == "json" {
-		data, err := json.MarshalIndent(filtered, "", "  ")
+		type instanceJSON struct {
+			*bazelcas.Instance
+			LastBuild string `json:"last_build"`
+			LastTest  string `json:"last_test"`
+		}
+		jsonList := make([]instanceJSON, len(filtered))
+		for i, inst := range filtered {
+			lastBuild := bazelcas.FormatRelativeTime(inst.LastBuildTime, now)
+			lastTest := bazelcas.FormatRelativeTime(inst.LastTestTime, now)
+			if inst.Type == bazelcas.TypeRepoCache {
+				lastBuild = "N/A"
+				lastTest = "N/A"
+			}
+			jsonList[i] = instanceJSON{
+				Instance:  inst,
+				LastBuild: lastBuild,
+				LastTest:  lastTest,
+			}
+		}
+		data, err := json.MarshalIndent(jsonList, "", "  ")
 		if err != nil {
 			log.Fatalf("Error marshaling instances to JSON: %v", err)
 		}
@@ -367,17 +388,25 @@ func runOutputBasesList(format string, orphanedOnly bool) {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tTYPE\tSIZE\tLAST MODIFIED\tSTATUS\tWORKSPACE PATH")
+	fmt.Fprintln(w, "ID\tTYPE\tSIZE\tLAST MODIFIED\tLAST BUILD\tLAST TEST\tSTATUS\tWORKSPACE PATH")
 	for _, inst := range filtered {
 		lastMod := inst.LastModified.Format("2006-01-02 15:04:05")
 		if inst.LastModified.IsZero() {
 			lastMod = "Unknown"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+		lastBuild := bazelcas.FormatRelativeTime(inst.LastBuildTime, now)
+		lastTest := bazelcas.FormatRelativeTime(inst.LastTestTime, now)
+		if inst.Type == bazelcas.TypeRepoCache {
+			lastBuild = "N/A"
+			lastTest = "N/A"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			inst.ID,
 			inst.Type,
 			bazelcas.FormatSize(inst.SizeBytes),
 			lastMod,
+			lastBuild,
+			lastTest,
 			inst.Status,
 			inst.WorkspacePath,
 		)
@@ -438,17 +467,26 @@ func runOutputBasesPrune(ttlStr, targetFreeStr string, orphanedOnly, execute, in
 		fmt.Println("--------------------------------------------------------------------------------")
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "ID\tTYPE\tSIZE\tLAST MODIFIED\tSTATUS\tWORKSPACE PATH")
+		fmt.Fprintln(w, "ID\tTYPE\tSIZE\tLAST MODIFIED\tLAST BUILD\tLAST TEST\tSTATUS\tWORKSPACE PATH")
+		now := time.Now()
 		for _, cand := range candidates {
 			lastMod := cand.LastModified.Format("2006-01-02 15:04:05")
 			if cand.LastModified.IsZero() {
 				lastMod = "Unknown"
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			lastBuild := bazelcas.FormatRelativeTime(cand.LastBuildTime, now)
+			lastTest := bazelcas.FormatRelativeTime(cand.LastTestTime, now)
+			if cand.Type == bazelcas.TypeRepoCache {
+				lastBuild = "N/A"
+				lastTest = "N/A"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 				cand.ID,
 				cand.Type,
 				bazelcas.FormatSize(cand.SizeBytes),
 				lastMod,
+				lastBuild,
+				lastTest,
 				cand.Status,
 				cand.WorkspacePath,
 			)

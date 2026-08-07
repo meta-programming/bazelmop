@@ -386,6 +386,62 @@
             background-color: var(--color-bg-subtle);
         }
 
+        .sortable-header {
+            cursor: pointer;
+            user-select: none;
+            transition: background-color 0.2s;
+        }
+
+        .sortable-header:hover {
+            background-color: var(--color-border-muted) !important;
+        }
+
+        .sort-icon {
+            display: inline-block;
+            margin-left: 4px;
+            font-size: 12px;
+            color: var(--color-fg-accent);
+            font-weight: bold;
+        }
+
+        body[data-theme="light"] .markdown-body table th {
+            background-color: #eaeef2;
+        }
+
+        .markdown-body ul, .markdown-body ol {
+            margin-top: 0;
+            margin-bottom: 16px;
+            padding-left: 2em;
+        }
+
+        .markdown-body li {
+            margin-top: 0.25em;
+        }
+
+        .markdown-body hr {
+            height: 0.25em;
+            padding: 0;
+            margin: 24px 0;
+            background-color: var(--color-border-default);
+            border: 0;
+        }
+
+        .markdown-body blockquote {
+            padding: 0 1em;
+            color: var(--color-fg-muted);
+            border-left: 0.25em solid var(--color-border-default);
+            margin: 0 0 16px 0;
+        }
+
+        /* Alert Callouts */
+        .markdown-body blockquote.alert-important {
+            border-left-color: var(--color-fg-accent);
+            background-color: var(--color-accent-bg);
+            padding: 12px 16px;
+            border-radius: 6px;
+        }
+
+>>>>>>> Stashed changes
         /* Progress loader styling */
         .progress-box {
             display: flex;
@@ -459,17 +515,33 @@
                     <table class="markdown-body" style="width: 100%; margin: 0; border: none; font-size: 13px;" id="output-bases-table">
                         <thead>
                             <tr>
-                                <th>Output Base ID</th>
-                                <th>Workspace Directory Path</th>
-                                <th>Status</th>
-                                <th>Age / Last Modified</th>
-                                <th>Disk Space</th>
+                                <th class="sortable-header" data-sort="id" style="cursor: pointer; user-select: none;">
+                                    ID <span class="sort-icon" id="sort-icon-id"></span>
+                                </th>
+                                <th class="sortable-header" data-sort="workspace_path" style="cursor: pointer; user-select: none;">
+                                    Workspace Path <span class="sort-icon" id="sort-icon-workspace_path"></span>
+                                </th>
+                                <th class="sortable-header" data-sort="status" style="cursor: pointer; user-select: none;">
+                                    Status <span class="sort-icon" id="sort-icon-status"></span>
+                                </th>
+                                <th class="sortable-header" data-sort="size" style="cursor: pointer; user-select: none;">
+                                    Size <span class="sort-icon" id="sort-icon-size"></span>
+                                </th>
+                                <th class="sortable-header" data-sort="last_modified" style="cursor: pointer; user-select: none;">
+                                    Last Modified <span class="sort-icon" id="sort-icon-last_modified"></span>
+                                </th>
+                                <th class="sortable-header" data-sort="last_build" style="cursor: pointer; user-select: none;">
+                                    Last Build <span class="sort-icon" id="sort-icon-last_build"></span>
+                                </th>
+                                <th class="sortable-header" data-sort="last_test" style="cursor: pointer; user-select: none;">
+                                    Last Test <span class="sort-icon" id="sort-icon-last_test"></span>
+                                </th>
                                 <th style="text-align: right;">Action</th>
                             </tr>
                         </thead>
                         <tbody id="output-bases-tbody">
                             <tr>
-                                <td colspan="6" style="text-align: center; padding: 24px; color: var(--color-fg-muted);">
+                                <td colspan="8" style="text-align: center; padding: 24px; color: var(--color-fg-muted);">
                                     No output bases discovered yet.
                                 </td>
                             </tr>
@@ -582,10 +654,12 @@
             return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
         }
 
-        function formatTimeAgo(isoString) {
-            if (!isoString) return 'Unknown';
-            const date = new Date(isoString);
-            if (isNaN(date.getTime())) return 'Unknown';
+        function formatAge(dateString, isRepoCache = false) {
+            if (dateString === 'Never' || dateString === 'N/A') return dateString;
+            if (isRepoCache) return 'N/A';
+            if (!dateString || dateString === '0001-01-01T00:00:00Z') return 'Never';
+            const date = new Date(dateString);
+            if (isNaN(date.getTime()) || date.getFullYear() <= 1) return 'Never';
             const now = new Date();
             const diffSec = Math.floor((now - date) / 1000);
             if (diffSec < 60) return 'Just now';
@@ -604,16 +678,63 @@
                 .replace(/'/g, '&#039;');
         }
 
-        // Render Output Bases Table Rows
-        function renderOutputBases(instances) {
+        function escapeJsString(str) {
+            if (!str) return '';
+            return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"');
+        }
+
+        let currentSortColumn = null;
+        let currentSortDirection = 'asc';
+
+        function getSizeValue(ob) {
+            if (ob.reclaimable_bytes !== undefined && ob.reclaimable_bytes !== null) {
+                return Number(ob.reclaimable_bytes) || 0;
+            }
+            if (ob.disk_size !== undefined && ob.disk_size !== null) {
+                return Number(ob.disk_size) || 0;
+            }
+            if (ob.size_bytes !== undefined && ob.size_bytes !== null) {
+                return Number(ob.size_bytes) || 0;
+            }
+            return 0;
+        }
+
+        function getDateValue(dateString) {
+            if (!dateString || dateString === '0001-01-01T00:00:00Z' || dateString === 'Never' || dateString === 'N/A') return 0;
+            const t = new Date(dateString).getTime();
+            return isNaN(t) ? 0 : t;
+        }
+
+        function getSortValue(ob, col) {
+            switch (col) {
+                case 'id':
+                    return (ob.id || '').toLowerCase();
+                case 'workspace_path':
+                    return (ob.workspace_path || '').toLowerCase();
+                case 'status':
+                    return (ob.status || '').toLowerCase();
+                case 'size':
+                    return getSizeValue(ob);
+                case 'last_modified':
+                    return getDateValue(ob.last_modified);
+                case 'last_build':
+                    return getDateValue(ob.last_build_time || ob.last_build);
+                case 'last_test':
+                    return getDateValue(ob.last_test_time || ob.last_test);
+                default:
+                    return '';
+            }
+        }
+
+        function renderOutputBases(outputBases) {
             const tbody = document.getElementById('output-bases-tbody');
             const meta = document.getElementById('output-bases-meta');
 
-            if (!instances || instances.length === 0) {
+            if (!outputBases || outputBases.length === 0) {
                 tbody.innerHTML = `
                     <tr>
-                        <td colspan="6" style="text-align: center; padding: 24px; color: var(--color-fg-muted);">
-                            No active output bases or repository cache instances discovered.
+                        <td colspan="8" style="text-align: center; padding: 24px; color: var(--color-fg-muted);">
+                            No output bases discovered yet.
                         </td>
                     </tr>
                 `;
@@ -621,34 +742,79 @@
                 return;
             }
 
-            let totalBytes = 0;
-            instances.forEach(inst => totalBytes += (inst.size_bytes || 0));
-            meta.textContent = `${instances.length} instances discovered (${formatBytes(totalBytes)})`;
+            // Apply active sorting
+            if (currentSortColumn) {
+                outputBases.sort((a, b) => {
+                    const valA = getSortValue(a, currentSortColumn);
+                    const valB = getSortValue(b, currentSortColumn);
+                    let cmp = 0;
+                    if (typeof valA === 'number' && typeof valB === 'number') {
+                        cmp = valA - valB;
+                    } else {
+                        cmp = String(valA).localeCompare(String(valB));
+                    }
+                    if (cmp !== 0) {
+                        return currentSortDirection === 'asc' ? cmp : -cmp;
+                    }
+                    return (a.id || '').localeCompare(b.id || '');
+                });
+            }
 
-            tbody.innerHTML = instances.map(inst => {
-                const isOrphaned = inst.status === 'Orphaned';
-                const statusBadge = isOrphaned ?
-                    `<span class="badge-orphaned">Orphaned</span>` :
-                    `<span class="badge-active">Active</span>`;
+            // Update visual sort indicators
+            const sortCols = ['id', 'workspace_path', 'status', 'size', 'last_modified', 'last_build', 'last_test'];
+            sortCols.forEach(col => {
+                const iconEl = document.getElementById(`sort-icon-${col}`);
+                if (iconEl) {
+                    if (col === currentSortColumn) {
+                        iconEl.textContent = currentSortDirection === 'asc' ? ' ↑' : ' ↓';
+                    } else {
+                        iconEl.textContent = '';
+                    }
+                }
+            });
 
-                const shortId = inst.id ? inst.id.substring(0, 8) : 'unknown';
-                const wsPath = (inst.workspace_path && inst.workspace_path !== 'N/A') ?
-                    escapeHtml(inst.workspace_path) :
-                    `<span style="color: var(--color-fg-muted); font-style: italic;">No workspace link</span>`;
+            let totalSize = 0;
+            outputBases.forEach(ob => totalSize += getSizeValue(ob));
+            meta.textContent = `${outputBases.length} Output Base${outputBases.length > 1 ? 's' : ''} (${formatBytes(totalSize)})`;
+
+            tbody.innerHTML = outputBases.map(ob => {
+                const isOrphaned = ob.status === 'Orphaned';
+                const badgeClass = isOrphaned ? 'badge-orphaned' : 'badge-active';
+                const statusText = ob.status || (isOrphaned ? 'Orphaned' : 'Active');
+                const shortId = ob.id.length > 12 ? ob.id.substring(0, 12) + '…' : ob.id;
+                const wsPath = ob.workspace_path || 'N/A';
+                const sizeVal = getSizeValue(ob);
+                const sizeStr = formatBytes(sizeVal);
+                const isRepoCache = ob.type === 'Repo Cache';
+                const lastModStr = formatAge(ob.last_modified);
+                const lastBuildStr = formatAge(ob.last_build_time || ob.last_build, isRepoCache);
+                const lastTestStr = formatAge(ob.last_test_time || ob.last_test, isRepoCache);
 
                 return `
                     <tr>
                         <td>
-                            <span class="badge-id" title="${escapeHtml(inst.id)}">${escapeHtml(shortId)}</span>
+                            <span class="badge-id" title="${escapeHtml(ob.id)}">${escapeHtml(shortId)}</span>
                         </td>
                         <td>
-                            <span class="workspace-path">${wsPath}</span>
+                            <span class="workspace-path">${escapeHtml(wsPath)}</span>
                         </td>
-                        <td>${statusBadge}</td>
-                        <td style="color: var(--color-fg-muted);">${formatTimeAgo(inst.last_modified)}</td>
-                        <td style="font-weight: 500;">${formatBytes(inst.size_bytes)}</td>
-                        <td style="text-align: right;">
-                            <button class="btn-danger" onclick="showDeleteModal('${escapeHtml(inst.id)}', '${escapeHtml(inst.workspace_path || '')}', ${inst.size_bytes || 0})">
+                        <td>
+                            <span class="${badgeClass}">${escapeHtml(statusText)}</span>
+                        </td>
+                        <td style="white-space: nowrap; font-weight: 500; font-size: 13px;">
+                            ${escapeHtml(sizeStr)}
+                        </td>
+                        <td style="white-space: nowrap; color: var(--color-fg-muted); font-size: 13px;">
+                            ${escapeHtml(lastModStr)}
+                        </td>
+                        <td style="white-space: nowrap; color: var(--color-fg-muted); font-size: 13px;">
+                            ${escapeHtml(lastBuildStr)}
+                        </td>
+                        <td style="white-space: nowrap; color: var(--color-fg-muted); font-size: 13px;">
+                            ${escapeHtml(lastTestStr)}
+                        </td>
+                        <td style="text-align: right; white-space: nowrap;">
+                            <button class="btn-danger" onclick="showDeleteModal('${escapeJsString(ob.id)}', '${escapeJsString(wsPath)}', ${sizeVal})">
                                 <svg aria-hidden="true" height="12" viewBox="0 0 16 16" version="1.1" width="12" fill="currentColor">
                                     <path d="M11 1.75V3h2.25a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1 0-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75ZM4.496 6.675l.66 6.6a.25.25 0 0 0 .249.225h5.19a.25.25 0 0 0 .249-.225l.66-6.6a.75.75 0 0 1 1.492.149l-.66 6.6A1.75 1.75 0 0 1 10.595 15h-5.19a1.75 1.75 0 0 1-1.741-1.576l-.66-6.6a.75.75 0 1 1 1.492-.149ZM6.5 1.75V3h3V1.75a.25.25 0 0 0-.25-.25h-2.5a.25.25 0 0 0-.25.25Z"></path>
                                 </svg>
@@ -835,6 +1001,21 @@
             const timeStr = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
             countdownEl.textContent = `Next scan in: ${timeStr}`;
         }
+
+        // Setup table header sort click handlers
+        document.querySelectorAll('#output-bases-table th.sortable-header').forEach(th => {
+            th.addEventListener('click', () => {
+                const col = th.getAttribute('data-sort');
+                if (!col) return;
+                if (currentSortColumn === col) {
+                    currentSortDirection = currentSortDirection === 'asc' ? 'desc' : 'asc';
+                } else {
+                    currentSortColumn = col;
+                    currentSortDirection = 'asc';
+                }
+                renderOutputBases(currentInstances);
+            });
+        });
 
         // Start connection & initial fetches
         initEventSource();

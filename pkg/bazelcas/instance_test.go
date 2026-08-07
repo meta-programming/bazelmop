@@ -180,3 +180,59 @@ func TestParseTTLAndSize(t *testing.T) {
 		t.Errorf("FormatSize failed: expected 15.4 GB, got %s", szFmt)
 	}
 }
+
+func TestLastBuildAndTestTime(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	buildTime := now.Add(-3 * time.Hour)
+	testTime := now.Add(-45 * time.Minute)
+
+	sys := fstest.MapFS{
+		"_bazel_user/0123456789abcdef0123456789abcdef/DO_NOT_BUILD_HERE": &fstest.MapFile{
+			Data: []byte("/home/user/workspace-test\n"),
+		},
+		"_bazel_user/0123456789abcdef0123456789abcdef/command.profile.gz": &fstest.MapFile{
+			ModTime: buildTime,
+		},
+		"_bazel_user/0123456789abcdef0123456789abcdef/execroot/workspace-test/bazel-out/k8-fastbuild/testlogs/pkg/foo/test.log": &fstest.MapFile{
+			ModTime: testTime,
+		},
+	}
+
+	insts, err := DiscoverInstances(sys, "/tmp/cache")
+	if err != nil {
+		t.Fatalf("DiscoverInstances failed: %v", err)
+	}
+
+	if len(insts) != 1 {
+		t.Fatalf("expected 1 instance, got %d", len(insts))
+	}
+
+	inst := insts[0]
+	if !inst.LastBuildTime.Equal(buildTime) {
+		t.Errorf("expected LastBuildTime %v, got %v", buildTime, inst.LastBuildTime)
+	}
+
+	if !inst.LastTestTime.Equal(testTime) {
+		t.Errorf("expected LastTestTime %v, got %v", testTime, inst.LastTestTime)
+	}
+}
+
+func TestFormatRelativeTime(t *testing.T) {
+	now := time.Now()
+
+	if res := FormatRelativeTime(time.Time{}, now); res != "Never" {
+		t.Errorf("expected 'Never' for zero time, got %q", res)
+	}
+
+	if res := FormatRelativeTime(now.Add(-10*time.Second), now); res != "Just now" {
+		t.Errorf("expected 'Just now', got %q", res)
+	}
+
+	if res := FormatRelativeTime(now.Add(-3*time.Hour), now); res != "3h ago" {
+		t.Errorf("expected '3h ago', got %q", res)
+	}
+
+	if res := FormatRelativeTime(now.Add(-2*24*time.Hour), now); res != "2d ago" {
+		t.Errorf("expected '2d ago', got %q", res)
+	}
+}
