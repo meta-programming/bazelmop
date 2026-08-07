@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -11,10 +12,12 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/meta-programming/bazelmop/pkg/bazelcas"
 	"github.com/meta-programming/bazelmop/pkg/dedupe"
 	"github.com/meta-programming/bazelmop/pkg/web"
 )
@@ -32,6 +35,15 @@ var (
 	webEnabled bool
 	webHost    string
 	webPort    string
+
+	// Subcommand flags
+	listFormat     string
+	listOrphaned   bool
+	gcTTL          string
+	gcTargetFree   string
+	gcOrphaned     bool
+	gcExecute      bool
+	gcInteractive  bool
 )
 
 func main() {
@@ -82,9 +94,54 @@ func main() {
 	daemonCmd.Flags().StringVar(&webHost, "web-host", "localhost", "Binding address for the web dashboard")
 	daemonCmd.Flags().StringVar(&webPort, "web-port", "8080", "Port for the web dashboard server")
 
+	var outputBasesCmd = &cobra.Command{
+		Use:     "output-bases",
+		Aliases: []string{"instances", "list"},
+		Short:   "List discovered Bazel cache output bases and repository caches",
+		Long:    `Discovers and displays all active and orphaned Bazel workspace output bases and content-addressable repository caches.`,
+		Run: func(cmd *cobra.Command, args []string) {
+			runOutputBasesList(listFormat, listOrphaned)
+		},
+	}
+	outputBasesCmd.Flags().StringVar(&listFormat, "format", "table", "Output format: table or json")
+	outputBasesCmd.Flags().BoolVar(&listOrphaned, "orphaned", false, "Filter output bases to show only orphaned instances (missing workspace path)")
+
+	var outputBasesPruneCmd = &cobra.Command{
+		Use:     "prune",
+		Aliases: []string{"gc"},
+		Short:   "Prune and garbage collect inactive or stale Bazel cache output bases",
+		Long:    `Analyzes or deletes Bazel output bases and repo caches based on age (TTL), target free space, or orphaned status.`,
+		Run: func(cmd *cobra.Command, args []string) {
+			runOutputBasesPrune(gcTTL, gcTargetFree, gcOrphaned, gcExecute, gcInteractive)
+		},
+	}
+	outputBasesPruneCmd.Flags().StringVar(&gcTTL, "ttl", "", "Time-to-live threshold for cache instances (e.g. 30d, 14d, 24h)")
+	outputBasesPruneCmd.Flags().StringVar(&gcTargetFree, "target-free", "", "Target disk space to reclaim (e.g. 20GB, 500MB)")
+	outputBasesPruneCmd.Flags().BoolVar(&gcOrphaned, "orphaned", false, "Filter candidates to only include orphaned output bases")
+	outputBasesPruneCmd.Flags().BoolVar(&gcExecute, "execute", false, "Execute filesystem deletion of candidate instances")
+	outputBasesPruneCmd.Flags().BoolVar(&gcInteractive, "interactive", false, "Prompt for confirmation before deleting each candidate instance")
+
+	var gcCmd = &cobra.Command{
+		Use:    "gc",
+		Short:  "Garbage collect output bases (alias for output-bases prune)",
+		Hidden: false,
+		Run: func(cmd *cobra.Command, args []string) {
+			runOutputBasesPrune(gcTTL, gcTargetFree, gcOrphaned, gcExecute, gcInteractive)
+		},
+	}
+	gcCmd.Flags().StringVar(&gcTTL, "ttl", "", "Time-to-live threshold for cache instances (e.g. 30d, 14d, 24h)")
+	gcCmd.Flags().StringVar(&gcTargetFree, "target-free", "", "Target disk space to reclaim (e.g. 20GB, 500MB)")
+	gcCmd.Flags().BoolVar(&gcOrphaned, "orphaned", false, "Filter candidates to only include orphaned output bases")
+	gcCmd.Flags().BoolVar(&gcExecute, "execute", false, "Execute filesystem deletion of candidate instances")
+	gcCmd.Flags().BoolVar(&gcInteractive, "interactive", false, "Prompt for confirmation before deleting each candidate instance")
+
+	outputBasesCmd.AddCommand(outputBasesPruneCmd)
+
 	rootCmd.AddCommand(cleanCmd)
 	rootCmd.AddCommand(reportCmd)
 	rootCmd.AddCommand(daemonCmd)
+	rootCmd.AddCommand(outputBasesCmd)
+	rootCmd.AddCommand(gcCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
@@ -256,6 +313,10 @@ func runDaemon() {
 		}
 		if webEnabled && webSrv != nil {
 			webSrv.UpdateReport(report, nextScan)
+			sys := os.DirFS(rootPath)
+			if insts, err := bazelcas.DiscoverInstances(sys, rootPath); err == nil {
+				webSrv.UpdateInstances(insts)
+			}
 		}
 		fmt.Printf("Completed scheduled deduplication.\n")
 	}
@@ -275,4 +336,186 @@ func runDaemon() {
 			runner(nextScan)
 		}
 	}
+}
+
+func runOutputBasesList(format string, orphanedOnly bool) {
+	resolveRootPath()
+	sys := os.DirFS(rootPath)
+
+	instances, err := bazelcas.DiscoverInstances(sys, rootPath)
+	if err != nil {
+		log.Fatalf("Error discovering Bazel cache instances: %v", err)
+	}
+
+	var filtered []*bazelcas.Instance
+	for _, inst := range instances {
+		if orphanedOnly && inst.Status != bazelcas.StatusOrphaned {
+			continue
+		}
+		filtered = append(filtered, inst)
+	}
+
+	bazelcas.SortInstances(filtered, "lru")
+
+	if strings.ToLower(format) == "json" {
+		data, err := json.MarshalIndent(filtered, "", "  ")
+		if err != nil {
+			log.Fatalf("Error marshaling instances to JSON: %v", err)
+		}
+		fmt.Println(string(data))
+		return
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tTYPE\tSIZE\tLAST MODIFIED\tSTATUS\tWORKSPACE PATH")
+	for _, inst := range filtered {
+		lastMod := inst.LastModified.Format("2006-01-02 15:04:05")
+		if inst.LastModified.IsZero() {
+			lastMod = "Unknown"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			inst.ID,
+			inst.Type,
+			bazelcas.FormatSize(inst.SizeBytes),
+			lastMod,
+			inst.Status,
+			inst.WorkspacePath,
+		)
+	}
+	w.Flush()
+}
+
+func runOutputBasesPrune(ttlStr, targetFreeStr string, orphanedOnly, execute, interactive bool) {
+	resolveRootPath()
+	sys := os.DirFS(rootPath)
+
+	ttlDuration, err := bazelcas.ParseTTL(ttlStr)
+	if err != nil {
+		log.Fatalf("Invalid TTL specification: %v", err)
+	}
+
+	targetFreeBytes, err := bazelcas.ParseSize(targetFreeStr)
+	if err != nil {
+		log.Fatalf("Invalid target free size specification: %v", err)
+	}
+
+	instances, err := bazelcas.DiscoverInstances(sys, rootPath)
+	if err != nil {
+		log.Fatalf("Error discovering Bazel cache instances: %v", err)
+	}
+
+	opts := bazelcas.GCOptions{
+		TTL:             ttlDuration,
+		TargetFreeBytes: targetFreeBytes,
+		OrphanedOnly:    orphanedOnly,
+	}
+
+	candidates := bazelcas.FilterInstances(instances, opts, time.Now())
+	if len(candidates) == 0 {
+		fmt.Println("No Bazel cache instances match the garbage collection criteria.")
+		return
+	}
+
+	var totalReclaimable int64
+	for _, cand := range candidates {
+		totalReclaimable += cand.SizeBytes
+	}
+
+	if !execute && !interactive {
+		fmt.Println("================================================================================")
+		fmt.Println("            Bazel Cache Instance Garbage Collection Analysis Report             ")
+		fmt.Println("================================================================================")
+		fmt.Printf("Cache Root:        %s\n", rootPath)
+		if ttlStr != "" {
+			fmt.Printf("TTL Threshold:     %s (%v)\n", ttlStr, ttlDuration)
+		}
+		if targetFreeStr != "" {
+			fmt.Printf("Target Free Size:  %s (%s)\n", targetFreeStr, bazelcas.FormatSize(targetFreeBytes))
+		}
+		fmt.Printf("Orphaned Filter:   %v\n", orphanedOnly)
+		fmt.Printf("Candidate Count:   %d instances\n", len(candidates))
+		fmt.Printf("Reclaimable Space: %s\n", bazelcas.FormatSize(totalReclaimable))
+		fmt.Println("--------------------------------------------------------------------------------")
+
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "ID\tTYPE\tSIZE\tLAST MODIFIED\tSTATUS\tWORKSPACE PATH")
+		for _, cand := range candidates {
+			lastMod := cand.LastModified.Format("2006-01-02 15:04:05")
+			if cand.LastModified.IsZero() {
+				lastMod = "Unknown"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+				cand.ID,
+				cand.Type,
+				bazelcas.FormatSize(cand.SizeBytes),
+				lastMod,
+				cand.Status,
+				cand.WorkspacePath,
+			)
+		}
+		w.Flush()
+
+		fmt.Println("\nImpact & Consequences of Deletion:")
+		for _, cand := range candidates {
+			if cand.Type == bazelcas.TypeOutputBase {
+				fmt.Printf(" - [Output Base %s]: Cold rebuild required on next build in workspace %s (output base will be recreated)\n", cand.ID, cand.WorkspacePath)
+			} else {
+				fmt.Printf(" - [Repo Cache %s]: External repository dependencies will be re-downloaded on next build\n", cand.ID)
+			}
+		}
+
+		fmt.Println("\nTo perform garbage collection automatically, run:")
+		cmdSuggest := "  bazelmop output-bases prune"
+		if ttlStr != "" {
+			cmdSuggest += " --ttl " + ttlStr
+		}
+		if targetFreeStr != "" {
+			cmdSuggest += " --target-free " + targetFreeStr
+		}
+		if orphanedOnly {
+			cmdSuggest += " --orphaned"
+		}
+		cmdSuggest += " --execute"
+		fmt.Println(cmdSuggest)
+
+		fmt.Println("\nOr remove candidate directories manually:")
+		for _, cand := range candidates {
+			fmt.Printf("  rm -rf %s\n", cand.Path)
+		}
+		fmt.Println("================================================================================")
+		return
+	}
+
+	fmt.Println("================================================================================")
+	fmt.Println("            Executing Bazel Cache Instance Garbage Collection                   ")
+	fmt.Println("================================================================================")
+
+	var deletedCount int
+	var deletedBytes int64
+
+	for _, cand := range candidates {
+		shouldDelete := execute
+		if interactive {
+			prompt := fmt.Sprintf("Delete %s instance %s (%s, %s)?", cand.Type, cand.ID, bazelcas.FormatSize(cand.SizeBytes), cand.Path)
+			shouldDelete = bazelcas.ReadPrompt(os.Stdin, prompt)
+		}
+
+		if shouldDelete {
+			fmt.Printf("Deleting %s (%s)... ", cand.Path, bazelcas.FormatSize(cand.SizeBytes))
+			err := os.RemoveAll(cand.Path)
+			if err != nil {
+				fmt.Printf("FAILED: %v\n", err)
+			} else {
+				fmt.Println("SUCCESS")
+				deletedCount++
+				deletedBytes += cand.SizeBytes
+			}
+		} else {
+			fmt.Printf("Skipped %s\n", cand.ID)
+		}
+	}
+
+	fmt.Println("--------------------------------------------------------------------------------")
+	fmt.Printf("Garbage Collection Complete: Removed %d instances, reclaimed %s of disk space.\n", deletedCount, bazelcas.FormatSize(deletedBytes))
+	fmt.Println("================================================================================")
 }
