@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/meta-programming/bazelmop/pkg/bazelcas"
+	"github.com/meta-programming/bazelmop/pkg/dedupe"
 )
 
 func TestWebServer(t *testing.T) {
@@ -201,3 +204,119 @@ func TestSortableOutputBasesTableHeaders(t *testing.T) {
 	}
 }
 
+func TestDedupePlanEndpoints(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "web-dedupe-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	userDir := filepath.Join(tmpDir, "_bazel_webuser")
+	wsDir := filepath.Join(userDir, "0123456789abcdef0123456789abcdef")
+	execDir := filepath.Join(wsDir, "execroot", "_main")
+	bazelOut := filepath.Join(execDir, "bazel-out", "k8-fastbuild", "bin")
+	if err := os.MkdirAll(bazelOut, 0755); err != nil {
+		t.Fatalf("failed to create bazelOut: %v", err)
+	}
+
+	pathA := filepath.Join(bazelOut, "binA")
+	pathB := filepath.Join(bazelOut, "binB")
+	content := []byte("identical binary content for web test")
+	_ = os.WriteFile(pathA, content, 0644)
+	_ = os.WriteFile(pathB, content, 0644)
+
+	s := NewServer("localhost", "0")
+	s.SetDedupeConfig(tmpDir, dedupe.Config{
+		ScanBazelOut: true,
+		ScanExternal: true,
+	})
+
+	// 1. Test Initial Plan State
+	plan := s.GetPendingPlan()
+	if plan != nil {
+		t.Errorf("Expected initial plan to be nil, got %v", plan)
+	}
+
+	// 2. Test Analyze Endpoint
+	reqAnalyze := httptest.NewRequest("POST", "/api/dedupe/analyze", nil)
+	wAnalyze := httptest.NewRecorder()
+	
+	// Set up router/mux
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/dedupe/analyze", func(w http.ResponseWriter, r *http.Request) {
+		p, _, err := dedupe.AnalyzePendingPlan(r.Context(), tmpDir, dedupe.Config{ScanBazelOut: true, ScanExternal: true})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.StartPendingPlanTimer(p)
+		_ = json.NewEncoder(w).Encode(p)
+	})
+	mux.HandleFunc("/api/dedupe/cancel", func(w http.ResponseWriter, r *http.Request) {
+		p := s.CancelPendingPlan()
+		_ = json.NewEncoder(w).Encode(p)
+	})
+	mux.HandleFunc("/api/dedupe/execute", func(w http.ResponseWriter, r *http.Request) {
+		p, err := s.ExecutePendingPlan(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(p)
+	})
+	mux.HandleFunc("/api/dedupe/plan", func(w http.ResponseWriter, r *http.Request) {
+		p := s.GetPendingPlan()
+		_ = json.NewEncoder(w).Encode(p)
+	})
+
+	mux.ServeHTTP(wAnalyze, reqAnalyze)
+	if wAnalyze.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK from analyze endpoint, got %d: %s", wAnalyze.Code, wAnalyze.Body.String())
+	}
+
+	var resAnalyze dedupe.PendingPlan
+	if err := json.Unmarshal(wAnalyze.Body.Bytes(), &resAnalyze); err != nil {
+		t.Fatalf("Failed to parse analyze JSON: %v", err)
+	}
+	if resAnalyze.Status != "pending" {
+		t.Errorf("Expected status 'pending' after analyze, got '%s'", resAnalyze.Status)
+	}
+	if resAnalyze.RemainingSec < 118 || resAnalyze.RemainingSec > 120 {
+		t.Errorf("Expected RemainingSec around 120, got %d", resAnalyze.RemainingSec)
+	}
+
+	// 3. Test Cancel Endpoint
+	reqCancel := httptest.NewRequest("POST", "/api/dedupe/cancel", nil)
+	wCancel := httptest.NewRecorder()
+	mux.ServeHTTP(wCancel, reqCancel)
+	if wCancel.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK from cancel endpoint, got %d", wCancel.Code)
+	}
+
+	var resCancel dedupe.PendingPlan
+	if err := json.Unmarshal(wCancel.Body.Bytes(), &resCancel); err != nil {
+		t.Fatalf("Failed to parse cancel JSON: %v", err)
+	}
+	if resCancel.Status != "cancelled" {
+		t.Errorf("Expected status 'cancelled' after cancel, got '%s'", resCancel.Status)
+	}
+
+	// 4. Test Re-Analyze and Immediate Execute
+	wAnalyze2 := httptest.NewRecorder()
+	mux.ServeHTTP(wAnalyze2, reqAnalyze)
+
+	reqExecute := httptest.NewRequest("POST", "/api/dedupe/execute", nil)
+	wExecute := httptest.NewRecorder()
+	mux.ServeHTTP(wExecute, reqExecute)
+	if wExecute.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK from execute endpoint, got %d: %s", wExecute.Code, wExecute.Body.String())
+	}
+
+	var resExecute dedupe.PendingPlan
+	if err := json.Unmarshal(wExecute.Body.Bytes(), &resExecute); err != nil {
+		t.Fatalf("Failed to parse execute JSON: %v", err)
+	}
+	if resExecute.Status != "completed" {
+		t.Errorf("Expected status 'completed' after execute, got '%s'", resExecute.Status)
+	}
+}

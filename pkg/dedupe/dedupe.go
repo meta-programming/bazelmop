@@ -149,6 +149,23 @@ type EquivalenceClass struct {
 	Duplicates     []FileEntry
 }
 
+// MatchGroup represents a set of duplicate files with a representative file entry.
+type MatchGroup = EquivalenceClass
+
+// PendingPlan represents a scheduled deduplication execution with auto-execute countdown metadata.
+type PendingPlan struct {
+	ID              string       `json:"id"`
+	CreatedAt       time.Time    `json:"created_at"`
+	ScheduledAt     time.Time    `json:"scheduled_at"` // CreatedAt + 2 minutes
+	AutoExecute     bool         `json:"auto_execute"`
+	RemainingSec    int          `json:"remaining_seconds"`
+	ReclaimableSize int64        `json:"reclaimable_bytes"`
+	FileCount       int          `json:"file_count"`
+	Groups          []MatchGroup `json:"-"`
+	Status          string       `json:"status"` // "pending", "executing", "completed", "cancelled"
+}
+
+
 // computeSHA256 hashes a file.
 func computeSHA256(path string) (string, error) {
 	f, err := os.Open(path)
@@ -165,16 +182,14 @@ func computeSHA256(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// Deduplicate executes matching and link replacement.
-func (d *Deduplicator) Deduplicate(ctx context.Context, entries []FileEntry) (string, error) {
-	// 1. Group by (Size, Dev)
-	sizeGroups := make(map[SizeDev][]int) // value holds indices in the entries array
+// HashCandidates hashes any unlinked candidate files in entries concurrently.
+func (d *Deduplicator) HashCandidates(ctx context.Context, entries []FileEntry) error {
+	sizeGroups := make(map[SizeDev][]int)
 	for i, entry := range entries {
 		key := SizeDev{Size: entry.Size, Dev: entry.Dev}
 		sizeGroups[key] = append(sizeGroups[key], i)
 	}
 
-	// 2. Find which files are in groups of size >= 2 and do NOT have their hash pre-resolved
 	var indicesToHash []int
 	for _, indices := range sizeGroups {
 		if len(indices) < 2 {
@@ -187,15 +202,14 @@ func (d *Deduplicator) Deduplicate(ctx context.Context, entries []FileEntry) (st
 		}
 	}
 
+	if len(indicesToHash) == 0 {
+		return nil
+	}
+
 	fmt.Printf("Calculating SHA-256 hashes for %d unlinked candidate files (skipping %d empty and %d unique-sized files)...\n",
 		len(indicesToHash), len(entries)-len(indicesToHash)-len(d.casMap), len(entries)-len(indicesToHash))
 	d.updateProgress(fmt.Sprintf("Hashing files: %d Group Candidates...", len(indicesToHash)))
 
-	if len(indicesToHash) == 0 {
-		return d.processMatches(ctx, entries)
-	}
-
-	// Concurrent worker pool for hashing
 	numWorkers := runtime.NumCPU() * 2
 	if numWorkers < 8 {
 		numWorkers = 8
@@ -236,7 +250,6 @@ func (d *Deduplicator) Deduplicate(ctx context.Context, entries []FileEntry) (st
 
 				currentHashed := atomic.AddUint64(&hashedCount, 1)
 
-				// Log progress safely
 				logMutex.Lock()
 				if time.Since(lastLogTime) >= 5*time.Second {
 					lastLogTime = time.Now()
@@ -251,14 +264,12 @@ func (d *Deduplicator) Deduplicate(ctx context.Context, entries []FileEntry) (st
 
 	wg.Wait()
 
-	// Handle cancellations
 	select {
 	case <-ctx.Done():
-		return "", ctx.Err()
+		return ctx.Err()
 	default:
 	}
 
-	// For empty files in candidate groups, assign "empty" hash
 	for _, indices := range sizeGroups {
 		if len(indices) < 2 {
 			continue
@@ -270,22 +281,20 @@ func (d *Deduplicator) Deduplicate(ctx context.Context, entries []FileEntry) (st
 		}
 	}
 
-	return d.processMatches(ctx, entries)
+	return nil
 }
 
-// processMatches groups identical files and executes link swaps.
-func (d *Deduplicator) processMatches(ctx context.Context, entries []FileEntry) (string, error) {
-	// Group by (Size, Dev, Hash)
+// FindMatches groups identical files and calculates reclaimable metrics and report.
+func (d *Deduplicator) FindMatches(ctx context.Context, entries []FileEntry) ([]MatchGroup, int64, int, string, error) {
 	groups := make(map[HashKey][]FileEntry)
 	for _, entry := range entries {
 		if entry.Hash == "" {
-			continue // Skip files that failed to hash or are unique-sized
+			continue
 		}
 		key := HashKey{Size: entry.Size, Dev: entry.Dev, Hash: entry.Hash}
 		groups[key] = append(groups[key], entry)
 	}
 
-	// Track matches to link
 	var matchesToLink []EquivalenceClass
 
 	for _, group := range groups {
@@ -293,7 +302,6 @@ func (d *Deduplicator) processMatches(ctx context.Context, entries []FileEntry) 
 			continue
 		}
 
-		// Partition the group based on inodes.
 		representative := group[0]
 		var duplicates []FileEntry
 
@@ -311,50 +319,34 @@ func (d *Deduplicator) processMatches(ctx context.Context, entries []FileEntry) 
 		}
 	}
 
-	// Calculate space statistics
-	var totalApparentSize int64
-	var totalDiskFootprint int64
 	var totalReclaimable int64
-
-	inodeSizes := make(map[uint64]int64)
-	for _, entry := range entries {
-		totalApparentSize += entry.Size
-		inodeSizes[entry.Inode] = entry.Size
-	}
-
-	for _, sz := range inodeSizes {
-		totalDiskFootprint += sz
-	}
-
+	var fileCount int
 	for _, match := range matchesToLink {
 		totalReclaimable += int64(len(match.Duplicates)) * match.Representative.Size
+		fileCount += len(match.Duplicates)
 	}
 
-	// Generate report
 	report := d.generateMarkdownReport(entries, matchesToLink)
-	fmt.Println(report)
+	return matchesToLink, totalReclaimable, fileCount, report, nil
+}
 
-	if d.config.DryRun {
-		fmt.Println("\n[Dry Run] No files were modified.")
-		d.updateProgress("Idle")
-		return report, nil
-	}
-
-	// Execute linking
+// ExecutePlan executes link replacements for all match groups in the pending plan.
+func (d *Deduplicator) ExecutePlan(ctx context.Context, plan *PendingPlan) (int64, int64, error) {
+	plan.Status = "executing"
 	d.updateProgress("Performing deduplication linking...")
-	fmt.Printf("\nPerforming deduplication linking for %d groups...\n", len(matchesToLink))
+	fmt.Printf("\nPerforming deduplication linking for %d groups...\n", len(plan.Groups))
+
 	var successCount, failCount int64
-	for _, match := range matchesToLink {
+	for _, match := range plan.Groups {
 		source := match.Representative.Path
 		for _, dup := range match.Duplicates {
 			select {
 			case <-ctx.Done():
 				d.updateProgress("Idle")
-				return report, ctx.Err()
+				return successCount, failCount, ctx.Err()
 			default:
 			}
 
-			// Perform link atomically
 			err := d.atomicLink(source, dup.Path)
 			if err != nil {
 				failCount++
@@ -371,8 +363,78 @@ func (d *Deduplicator) processMatches(ctx context.Context, entries []FileEntry) 
 	if failCount > 0 {
 		fmt.Printf("Warning: %s linking operations failed. Run with --verbose to view details.\n", formatNumber(failCount))
 	}
+	plan.Status = "completed"
+	plan.RemainingSec = 0
 	d.updateProgress("Idle")
+	return successCount, failCount, nil
+}
+
+// Deduplicate executes matching and link replacement on scanned entries.
+func (d *Deduplicator) Deduplicate(ctx context.Context, entries []FileEntry) (string, error) {
+	if err := d.HashCandidates(ctx, entries); err != nil {
+		return "", err
+	}
+	return d.processMatches(ctx, entries)
+}
+
+// processMatches groups identical files and executes link swaps.
+func (d *Deduplicator) processMatches(ctx context.Context, entries []FileEntry) (string, error) {
+	matchesToLink, _, _, report, err := d.FindMatches(ctx, entries)
+	if err != nil {
+		return "", err
+	}
+
+	fmt.Println(report)
+
+	if d.config.DryRun {
+		fmt.Println("\n[Dry Run] No files were modified.")
+		d.updateProgress("Idle")
+		return report, nil
+	}
+
+	plan := &PendingPlan{
+		Groups: matchesToLink,
+	}
+	_, _, err = d.ExecutePlan(ctx, plan)
+	if err != nil {
+		return report, err
+	}
 	return report, nil
+}
+
+// AnalyzePendingPlan runs Scan + Deduplicate(dryRun=true) to build duplicate file groups without modifying files on disk.
+func AnalyzePendingPlan(ctx context.Context, root string, cfg Config) (*PendingPlan, string, error) {
+	cfg.DryRun = true
+	d := NewDeduplicator(cfg)
+
+	entries, err := d.Scan(ctx, root)
+	if err != nil {
+		return nil, "", fmt.Errorf("scan failed: %w", err)
+	}
+
+	if err := d.HashCandidates(ctx, entries); err != nil {
+		return nil, "", fmt.Errorf("hashing candidates failed: %w", err)
+	}
+
+	matchesToLink, reclaimable, count, report, err := d.FindMatches(ctx, entries)
+	if err != nil {
+		return nil, "", fmt.Errorf("matching failed: %w", err)
+	}
+
+	now := time.Now()
+	plan := &PendingPlan{
+		ID:              fmt.Sprintf("plan-%d", now.UnixNano()),
+		CreatedAt:       now,
+		ScheduledAt:     now.Add(2 * time.Minute),
+		AutoExecute:     true,
+		RemainingSec:    120,
+		ReclaimableSize: reclaimable,
+		FileCount:       count,
+		Groups:          matchesToLink,
+		Status:          "pending",
+	}
+
+	return plan, report, nil
 }
 
 // extractWorkspace parses the username and workspace MD5 hash from the file path.

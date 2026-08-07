@@ -147,38 +147,27 @@ func DiscoverInstances(sys fs.FS, rootPath string) ([]*Instance, error) {
 
 	var jobs []scanJob
 
+	// 1. Direct discovery if rootPath directly contains repo cache
+	directRepoCache := filepath.Join("cache", "repos", "v1", "content_addressable")
+	if repoInfo, err := fs.Stat(sys, directRepoCache); err == nil && repoInfo.IsDir() {
+		jobs = append(jobs, scanJob{
+			relDir:   directRepoCache,
+			id:       "repo-cache",
+			instType: TypeRepoCache,
+			wsPath:   "N/A",
+			status:   StatusActive,
+		})
+	}
+
 	for _, entry := range entries {
-		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "_bazel_") {
+		if !entry.IsDir() {
 			continue
 		}
 
-		userRelDir := entry.Name()
-
-		// 1. Discover Repo Cache under _bazel_<user>/cache/repos/v1/content_addressable
-		repoCacheRelDir := filepath.Join(userRelDir, "cache", "repos", "v1", "content_addressable")
-		if repoInfo, err := fs.Stat(sys, repoCacheRelDir); err == nil && repoInfo.IsDir() {
-			jobs = append(jobs, scanJob{
-				relDir:   repoCacheRelDir,
-				id:       "repo-cache",
-				instType: TypeRepoCache,
-				wsPath:   "N/A",
-				status:   StatusActive,
-			})
-		}
-
-		// 2. Discover Output Base instances (32-character MD5 subdirectories)
-		userEntries, err := fs.ReadDir(sys, userRelDir)
-		if err != nil {
-			continue
-		}
-
-		for _, userSub := range userEntries {
-			if !userSub.IsDir() || !isMD5(userSub.Name()) {
-				continue
-			}
-
-			md5Str := userSub.Name()
-			outputBaseRelDir := filepath.Join(userRelDir, md5Str)
+		// Case A: Direct output base at root (e.g. /media/red/extra/bazel/<md5>)
+		if isMD5(entry.Name()) {
+			md5Str := entry.Name()
+			outputBaseRelDir := md5Str
 
 			wsPath := ResolveWorkspacePath(sys, outputBaseRelDir)
 			status := StatusOrphaned
@@ -195,6 +184,55 @@ func DiscoverInstances(sys fs.FS, rootPath string) ([]*Instance, error) {
 				wsPath:   wsPath,
 				status:   status,
 			})
+			continue
+		}
+
+		// Case B: Hierarchical output bases under _bazel_<user>/...
+		if strings.HasPrefix(entry.Name(), "_bazel_") {
+			userRelDir := entry.Name()
+
+			// Discover Repo Cache under _bazel_<user>/cache/repos/v1/content_addressable
+			repoCacheRelDir := filepath.Join(userRelDir, "cache", "repos", "v1", "content_addressable")
+			if repoInfo, err := fs.Stat(sys, repoCacheRelDir); err == nil && repoInfo.IsDir() {
+				jobs = append(jobs, scanJob{
+					relDir:   repoCacheRelDir,
+					id:       "repo-cache",
+					instType: TypeRepoCache,
+					wsPath:   "N/A",
+					status:   StatusActive,
+				})
+			}
+
+			// Discover Output Base instances (32-character MD5 subdirectories)
+			userEntries, err := fs.ReadDir(sys, userRelDir)
+			if err != nil {
+				continue
+			}
+
+			for _, userSub := range userEntries {
+				if !userSub.IsDir() || !isMD5(userSub.Name()) {
+					continue
+				}
+
+				md5Str := userSub.Name()
+				outputBaseRelDir := filepath.Join(userRelDir, md5Str)
+
+				wsPath := ResolveWorkspacePath(sys, outputBaseRelDir)
+				status := StatusOrphaned
+				if wsPath != "" {
+					status = DetermineWorkspaceStatus(sys, wsPath)
+				} else {
+					wsPath = "N/A"
+				}
+
+				jobs = append(jobs, scanJob{
+					relDir:   outputBaseRelDir,
+					id:       md5Str,
+					instType: TypeOutputBase,
+					wsPath:   wsPath,
+					status:   status,
+				})
+			}
 		}
 	}
 
@@ -577,4 +615,28 @@ func ReadPrompt(r io.Reader, prompt string) bool {
 		return text == "y" || text == "yes"
 	}
 	return false
+}
+
+// RemoveInstance removes an instance directory recursively, making read-only subdirectories
+// and files created by Bazel writable if initial deletion encounters permission errors.
+func RemoveInstance(path string) error {
+	err := os.RemoveAll(path)
+	if err == nil || os.IsNotExist(err) {
+		return nil
+	}
+
+	// Bazel marks output directories and cache files read-only (e.g. 0555).
+	// Restore write permissions recursively across the tree so deletion succeeds.
+	_ = filepath.WalkDir(path, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr == nil {
+			if d.IsDir() {
+				_ = os.Chmod(p, 0755)
+			} else {
+				_ = os.Chmod(p, 0644)
+			}
+		}
+		return nil
+	})
+
+	return os.RemoveAll(path)
 }
