@@ -8,21 +8,26 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/meta-programming/bazelmop/pkg/bazelcas"
 )
 
 // Go embed directives to bundle frontend files into the binary.
 //go:embed assets/index.html assets/marked.min.js
 var assetsFS embed.FS
 
-// Server handles serving the web-based report viewer dashboard.
+// Server handles serving the web-based report viewer dashboard and output bases API.
 type Server struct {
 	host string
 	port string
 
 	mu             sync.RWMutex
 	reportMarkdown string
+	instances      []*bazelcas.Instance
 	updatedAt      time.Time
 	nextScanAt     time.Time
 	status         string
@@ -53,6 +58,15 @@ func (s *Server) UpdateReport(markdown string, nextScan time.Time) {
 	s.broadcast()
 }
 
+// UpdateInstances updates the active list of output base and repo cache instances and broadcasts it.
+func (s *Server) UpdateInstances(instances []*bazelcas.Instance) {
+	s.mu.Lock()
+	s.instances = instances
+	s.mu.Unlock()
+
+	s.broadcast()
+}
+
 // UpdateNextScan updates the next scan time and broadcasts to clients.
 func (s *Server) UpdateNextScan(nextScan time.Time) {
 	s.mu.Lock()
@@ -78,8 +92,10 @@ func (s *Server) broadcast() {
 	if st == "" {
 		st = "Idle"
 	}
+
 	payload := map[string]interface{}{
 		"report":     s.reportMarkdown,
+		"instances":  s.instances,
 		"updated_at": "",
 		"next_scan":  "",
 		"status":     st,
@@ -145,6 +161,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/report", func(w http.ResponseWriter, r *http.Request) {
 		s.mu.RLock()
 		report := s.reportMarkdown
+		insts := s.instances
 		updated := s.updatedAt
 		nextScan := s.nextScanAt
 		st := s.status
@@ -156,6 +173,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 		payload := map[string]interface{}{
 			"report":     report,
+			"instances":  insts,
 			"updated_at": "",
 			"next_scan":  "",
 			"status":     st,
@@ -172,7 +190,78 @@ func (s *Server) Start(ctx context.Context) error {
 		_ = json.NewEncoder(w).Encode(payload)
 	})
 
-	// 4. SSE route: Stream real-time updates to client
+	// 4. API route: Serve instances list as JSON
+	mux.HandleFunc("/api/instances", func(w http.ResponseWriter, r *http.Request) {
+		s.mu.RLock()
+		insts := s.instances
+		s.mu.RUnlock()
+
+		if insts == nil {
+			insts = []*bazelcas.Instance{}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(insts)
+	})
+
+	// 5. API route: Delete output base by ID
+	outputBasesHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete && r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		id := strings.TrimPrefix(r.URL.Path, "/api/output-bases/")
+		id = strings.TrimPrefix(id, "/api/output-bases")
+		id = strings.TrimPrefix(id, "/")
+		if id == "" || id == "delete" {
+			id = r.URL.Query().Get("id")
+		}
+		if id == "" {
+			http.Error(w, "Missing output base id", http.StatusBadRequest)
+			return
+		}
+
+		s.mu.Lock()
+		var target *bazelcas.Instance
+		var remaining []*bazelcas.Instance
+		for _, inst := range s.instances {
+			if inst.ID == id {
+				target = inst
+			} else {
+				remaining = append(remaining, inst)
+			}
+		}
+
+		if target == nil {
+			s.mu.Unlock()
+			http.Error(w, "Output base not found", http.StatusNotFound)
+			return
+		}
+
+		if target.Path != "" {
+			_ = os.RemoveAll(target.Path)
+		}
+
+		s.instances = remaining
+		s.mu.Unlock()
+
+		s.broadcast()
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"id":      id,
+			"message": fmt.Sprintf("Successfully deleted output base %s", id),
+		})
+	}
+
+	mux.HandleFunc("/api/output-bases", outputBasesHandler)
+	mux.HandleFunc("/api/output-bases/", outputBasesHandler)
+
+	// 6. SSE route: Stream real-time updates to client
 	mux.HandleFunc("/api/events", func(w http.ResponseWriter, r *http.Request) {
 		// Set headers required for Server-Sent Events
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -194,14 +283,16 @@ func (s *Server) Start(ctx context.Context) error {
 			close(ch)
 		}()
 
-		// Send the initial report immediately upon connection
+		// Send initial payload immediately upon connection
 		s.mu.RLock()
 		st := s.status
 		if st == "" {
 			st = "Idle"
 		}
+
 		initPayload := map[string]interface{}{
 			"report":     s.reportMarkdown,
+			"instances":  s.instances,
 			"updated_at": "",
 			"next_scan":  "",
 			"status":     st,
