@@ -105,3 +105,69 @@ func TestWalk(t *testing.T) {
 		t.Errorf("expected 0 repo cache files, got %d", len(discovered2.RepoCacheCAS))
 	}
 }
+
+// A root named by --output_user_root is already the per-user directory, so its
+// output bases sit directly beneath it with no _bazel_<user> level.
+//
+// This is not a rare configuration: any machine that moves its Bazel cache off
+// the home partition has it. Before this was handled, Walk skipped every entry
+// on such a root and returned no files at all, so `report` and `clean` said
+// nothing was found while `output-bases` listed the same cache correctly.
+func TestWalkFindsOutputBasesDirectlyUnderTheRoot(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	wsDir := filepath.Join(tmpDir, "0123456789abcdef0123456789abcdef")
+	bazelOutDir := filepath.Join(wsDir, "execroot", "_main", "bazel-out", "k8-fastbuild")
+	externalDir := filepath.Join(wsDir, "external", "rules_go")
+	repoCasDir := filepath.Join(tmpDir, "cache", "repos", "v1", "content_addressable", "sha256",
+		"1b4f4ef8bc3a4d8c0123456789abcdef0123456789abcdef0123456789abcdef")
+
+	for _, dir := range []string{bazelOutDir, externalDir, repoCasDir} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("failed to create dir %s: %v", dir, err)
+		}
+	}
+	for path, content := range map[string]string{
+		filepath.Join(bazelOutDir, "main.a"):    "bin",
+		filepath.Join(externalDir, "README.md"): "doc",
+		filepath.Join(repoCasDir, "file"):       "archive",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatalf("failed to write %s: %v", path, err)
+		}
+	}
+
+	got, err := Walk(context.Background(), bazelcas.RootCASPath(tmpDir))
+	if err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	if len(got.BuildOutputs) != 1 {
+		t.Errorf("build outputs = %d, want 1: %v", len(got.BuildOutputs), got.BuildOutputs)
+	}
+	if len(got.ExternalDeps) != 1 {
+		t.Errorf("external deps = %d, want 1: %v", len(got.ExternalDeps), got.ExternalDeps)
+	}
+	if len(got.RepoCacheCAS) != 1 {
+		t.Errorf("repo cache entries = %d, want 1: %v", len(got.RepoCacheCAS), got.RepoCacheCAS)
+	}
+}
+
+// A root that is neither layout must stay empty rather than being walked as
+// though every directory in it were an output base.
+func TestWalkIgnoresARootThatHoldsNeitherLayout(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmpDir, "not-a-cache", "external", "rules_go"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "not-a-cache", "external", "rules_go", "x"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Walk(context.Background(), bazelcas.RootCASPath(tmpDir))
+	if err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	if n := len(got.BuildOutputs) + len(got.ExternalDeps) + len(got.RepoCacheCAS); n != 0 {
+		t.Errorf("found %d files under a root that is not a Bazel cache", n)
+	}
+}
