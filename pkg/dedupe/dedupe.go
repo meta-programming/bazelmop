@@ -673,7 +673,9 @@ func (d *Deduplicator) atomicLink(source, target string) error {
 	// Attempt reflink if preferred
 	linked := false
 	if d.config.PreferReflink {
-		err := cloneFile(source, tempPath)
+		// info is the mode of the file being replaced, read above. A reflink
+		// clone is a new inode and inherits nothing from it.
+		err := cloneFile(source, tempPath, info.Mode())
 		if err == nil {
 			linked = true
 		} else if d.config.Verbose {
