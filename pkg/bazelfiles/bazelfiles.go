@@ -2,6 +2,7 @@ package bazelfiles
 
 import (
 	"context"
+	"encoding/hex"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -158,6 +159,31 @@ func WithScanBazelOut(enable bool) WalkOption {
 	}
 }
 
+// containsOutputBase reports whether these root entries are output bases
+// themselves rather than per-user directories holding them.
+//
+// An output base is named by the MD5 of its workspace path, so a 32-character
+// hex directory is the signal. Checked before treating a root as a per-user
+// directory so that an unrelated directory of the right shape is not walked as
+// though it were a Bazel cache.
+func containsOutputBase(entries []os.DirEntry) bool {
+	for _, e := range entries {
+		if e.IsDir() && isOutputBaseName(e.Name()) {
+			return true
+		}
+	}
+	return false
+}
+
+// isOutputBaseName reports whether a directory name is an output base's.
+func isOutputBaseName(name string) bool {
+	if len(name) != 32 {
+		return false
+	}
+	_, err := hex.DecodeString(name)
+	return err == nil
+}
+
 // Walk recursively walks the Bazel root cache directory and maps discovered
 // files into a strongly-typed DiscoveredFiles container, applying any WalkOption modifiers.
 func Walk(ctx context.Context, root bazelcas.RootCASPath, options ...WalkOption) (*DiscoveredFiles, error) {
@@ -177,18 +203,33 @@ func Walk(ctx context.Context, root bazelcas.RootCASPath, options ...WalkOption)
 		return nil, err
 	}
 
+	// A root holds output bases in one of two layouts, and both occur in
+	// practice. Bazel's default puts them under a per-user directory, so the
+	// root contains _bazel_<user>/<md5>. A root named by --output_user_root
+	// is already the per-user directory, so it contains <md5> directly.
+	//
+	// Scanning only the first layout is not a partial result, it is an empty
+	// one: every entry fails the _bazel_ prefix test, the walk returns having
+	// read a single directory, and the report says no files were found rather
+	// than that it did not know where to look. bazelcas.DiscoverInstances
+	// already handles both, which is why `output-bases` can list a cache that
+	// `report` and `clean` cannot see.
+	userPaths := make([]string, 0, len(userEntries))
 	for _, userEntry := range userEntries {
+		if userEntry.IsDir() && strings.HasPrefix(userEntry.Name(), "_bazel_") {
+			userPaths = append(userPaths, filepath.Join(rootStr, userEntry.Name()))
+		}
+	}
+	if len(userPaths) == 0 && containsOutputBase(userEntries) {
+		userPaths = append(userPaths, rootStr)
+	}
+
+	for _, userPath := range userPaths {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		default:
 		}
-
-		if !userEntry.IsDir() || !strings.HasPrefix(userEntry.Name(), "_bazel_") {
-			continue
-		}
-
-		userPath := filepath.Join(rootStr, userEntry.Name())
 
 		// Read repository cache CAS files if configured
 		if opts.scanExternal {
