@@ -150,12 +150,21 @@ type EquivalenceClass struct {
 }
 
 // computeSHA256 hashes a file.
+//
+// The file is read once and never revisited, so its pages are released from the
+// page cache on the way out. See [dropPageCache] for why that is not left to
+// the kernel to work out.
 func computeSHA256(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
+
+	adviseSequential(f)
+	// Deferred rather than run after the copy so that a read error does not
+	// leave the file's pages behind.
+	defer dropPageCache(f)
 
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
