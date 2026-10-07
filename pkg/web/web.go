@@ -9,18 +9,20 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/meta-programming/bazelmop/pkg/bazelcas"
+	"github.com/meta-programming/bazelmop/pkg/dedupe"
 )
 
 // Go embed directives to bundle frontend files into the binary.
 //go:embed assets/index.html assets/marked.min.js
 var assetsFS embed.FS
 
-// Server handles serving the web-based report viewer dashboard and output bases API.
+// Server handles serving the web-based report viewer dashboard and pending plan API.
 type Server struct {
 	host string
 	port string
@@ -31,6 +33,12 @@ type Server struct {
 	updatedAt      time.Time
 	nextScanAt     time.Time
 	status         string
+
+	// Pending deduplication plan state
+	rootPath     string
+	dedupeConfig dedupe.Config
+	pendingPlan  *dedupe.PendingPlan
+	planCancel   context.CancelFunc
 
 	clientsMu sync.Mutex
 	clients   map[chan string]bool
@@ -43,6 +51,170 @@ func NewServer(host, port string) *Server {
 		port:    port,
 		clients: make(map[chan string]bool),
 	}
+}
+
+// SetDedupeConfig sets the root path and deduplication configuration used for plan operations.
+func (s *Server) SetDedupeConfig(rootPath string, cfg dedupe.Config) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rootPath = rootPath
+	s.dedupeConfig = cfg
+}
+
+// StartPendingPlanTimer stores PendingPlan in memory and starts a 2-minute countdown timer.
+func (s *Server) StartPendingPlanTimer(plan *dedupe.PendingPlan) {
+	s.mu.Lock()
+	if s.planCancel != nil {
+		s.planCancel()
+		s.planCancel = nil
+	}
+
+	s.pendingPlan = plan
+	ctx, cancel := context.WithCancel(context.Background())
+	s.planCancel = cancel
+	s.mu.Unlock()
+
+	s.broadcast()
+
+	go s.runTimer(ctx, plan)
+}
+
+func (s *Server) runTimer(ctx context.Context, plan *dedupe.PendingPlan) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.mu.Lock()
+			if s.pendingPlan != plan || plan.Status != "pending" {
+				s.mu.Unlock()
+				return
+			}
+
+			rem := int(time.Until(plan.ScheduledAt).Seconds())
+			if rem <= 0 {
+				plan.RemainingSec = 0
+				s.mu.Unlock()
+
+				// Auto-execute deduplication plan when countdown reaches 0s
+				_, _ = s.ExecutePendingPlan(context.Background())
+				return
+			}
+
+			plan.RemainingSec = rem
+			s.mu.Unlock()
+
+			s.broadcast()
+		}
+	}
+}
+
+// CancelPendingPlan stops the timer, discards active plan status, sets status to "cancelled", and broadcasts state update.
+func (s *Server) CancelPendingPlan() *dedupe.PendingPlan {
+	s.mu.Lock()
+	if s.planCancel != nil {
+		s.planCancel()
+		s.planCancel = nil
+	}
+
+	if s.pendingPlan != nil {
+		s.pendingPlan.Status = "cancelled"
+		s.pendingPlan.RemainingSec = 0
+	}
+
+	plan := s.pendingPlan
+	s.mu.Unlock()
+
+	s.broadcast()
+	return plan
+}
+
+// ExecutePendingPlan instantly executes stored PendingPlan before countdown timer expires.
+func (s *Server) ExecutePendingPlan(ctx context.Context) (*dedupe.PendingPlan, error) {
+	s.mu.Lock()
+	plan := s.pendingPlan
+	if plan == nil {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("no pending plan to execute")
+	}
+
+	if plan.Status != "pending" && plan.Status != "executing" {
+		status := plan.Status
+		s.mu.Unlock()
+		return nil, fmt.Errorf("pending plan is not executable (current status: %s)", status)
+	}
+
+	if s.planCancel != nil {
+		s.planCancel()
+		s.planCancel = nil
+	}
+
+	plan.Status = "executing"
+	s.status = "Executing pending plan..."
+	root := s.rootPath
+	cfg := s.dedupeConfig
+	s.mu.Unlock()
+
+	s.broadcast()
+
+	if root == "" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			root = filepath.Join(home, ".cache", "bazel")
+		}
+	}
+	if !cfg.ScanExternal && !cfg.ScanBazelOut {
+		cfg.ScanExternal = true
+		cfg.ScanBazelOut = true
+		cfg.PreferReflink = true
+	}
+
+	d := dedupe.NewDeduplicator(cfg)
+	_, _, err := d.ExecutePlan(ctx, plan)
+
+	s.mu.Lock()
+	if err != nil {
+		plan.Status = "failed"
+		s.status = "Idle"
+		s.mu.Unlock()
+		s.broadcast()
+		return plan, fmt.Errorf("failed to execute plan: %w", err)
+	}
+
+	plan.Status = "completed"
+	plan.RemainingSec = 0
+	s.status = "Idle"
+
+	// Rescan after execution to update markdown report
+	if entries, errScan := d.Scan(ctx, root); errScan == nil {
+		if report, errDedup := d.Deduplicate(ctx, entries); errDedup == nil {
+			s.reportMarkdown = report
+			s.updatedAt = time.Now()
+		}
+	}
+	s.mu.Unlock()
+
+	s.broadcast()
+	return plan, nil
+}
+
+// GetPendingPlan returns current pending plan status and remaining seconds.
+func (s *Server) GetPendingPlan() *dedupe.PendingPlan {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.pendingPlan != nil && s.pendingPlan.Status == "pending" {
+		rem := int(time.Until(s.pendingPlan.ScheduledAt).Seconds())
+		if rem < 0 {
+			rem = 0
+		}
+		s.pendingPlan.RemainingSec = rem
+	}
+
+	return s.pendingPlan
 }
 
 // UpdateReport updates the report content and schedules the next scan time,
@@ -92,13 +264,22 @@ func (s *Server) broadcast() {
 	if st == "" {
 		st = "Idle"
 	}
+	plan := s.pendingPlan
+	if plan != nil && plan.Status == "pending" {
+		rem := int(time.Until(plan.ScheduledAt).Seconds())
+		if rem < 0 {
+			rem = 0
+		}
+		plan.RemainingSec = rem
+	}
 
 	payload := map[string]interface{}{
-		"report":     s.reportMarkdown,
-		"instances":  s.instances,
-		"updated_at": "",
-		"next_scan":  "",
-		"status":     st,
+		"report":       s.reportMarkdown,
+		"instances":    s.instances,
+		"updated_at":   "",
+		"next_scan":    "",
+		"status":       st,
+		"pending_plan": plan,
 	}
 	if !s.updatedAt.IsZero() {
 		payload["updated_at"] = s.updatedAt.Format(time.RFC3339)
@@ -165,6 +346,14 @@ func (s *Server) Start(ctx context.Context) error {
 		updated := s.updatedAt
 		nextScan := s.nextScanAt
 		st := s.status
+		plan := s.pendingPlan
+		if plan != nil && plan.Status == "pending" {
+			rem := int(time.Until(plan.ScheduledAt).Seconds())
+			if rem < 0 {
+				rem = 0
+			}
+			plan.RemainingSec = rem
+		}
 		s.mu.RUnlock()
 
 		if st == "" {
@@ -172,11 +361,12 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 
 		payload := map[string]interface{}{
-			"report":     report,
-			"instances":  insts,
-			"updated_at": "",
-			"next_scan":  "",
-			"status":     st,
+			"report":       report,
+			"instances":    insts,
+			"updated_at":   "",
+			"next_scan":    "",
+			"status":       st,
+			"pending_plan": plan,
 		}
 		if !updated.IsZero() {
 			payload["updated_at"] = updated.Format(time.RFC3339)
@@ -241,7 +431,7 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 
 		if target.Path != "" {
-			_ = os.RemoveAll(target.Path)
+			_ = bazelcas.RemoveInstance(target.Path)
 		}
 
 		s.instances = remaining
@@ -261,7 +451,112 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/output-bases", outputBasesHandler)
 	mux.HandleFunc("/api/output-bases/", outputBasesHandler)
 
-	// 6. SSE route: Stream real-time updates to client
+	// 6. Pending Plan API endpoints: analyze, execute, cancel, plan
+	mux.HandleFunc("/api/dedupe/analyze", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		s.mu.RLock()
+		root := s.rootPath
+		cfg := s.dedupeConfig
+		s.mu.RUnlock()
+
+		if root == "" {
+			home, err := os.UserHomeDir()
+			if err == nil {
+				root = filepath.Join(home, ".cache", "bazel")
+			}
+		}
+		if !cfg.ScanExternal && !cfg.ScanBazelOut {
+			cfg.ScanExternal = true
+			cfg.ScanBazelOut = true
+			cfg.PreferReflink = true
+		}
+
+		plan, report, err := dedupe.AnalyzePendingPlan(r.Context(), root, cfg)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to analyze dedupe plan: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		if report != "" {
+			s.mu.Lock()
+			s.reportMarkdown = report
+			s.updatedAt = time.Now()
+			s.mu.Unlock()
+		}
+
+		s.StartPendingPlanTimer(plan)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(plan)
+	})
+
+	mux.HandleFunc("/api/dedupe/execute", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		plan, err := s.ExecutePendingPlan(r.Context())
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(plan)
+	})
+
+	mux.HandleFunc("/api/dedupe/cancel", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		plan := s.CancelPendingPlan()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+
+		if plan == nil {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status":            "cancelled",
+				"remaining_seconds": 0,
+			})
+			return
+		}
+
+		_ = json.NewEncoder(w).Encode(plan)
+	})
+
+	mux.HandleFunc("/api/dedupe/plan", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		plan := s.GetPendingPlan()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+
+		if plan == nil {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status":            "none",
+				"remaining_seconds": 0,
+			})
+			return
+		}
+
+		_ = json.NewEncoder(w).Encode(plan)
+	})
+
+	// 7. SSE route: Stream real-time updates to client
 	mux.HandleFunc("/api/events", func(w http.ResponseWriter, r *http.Request) {
 		// Set headers required for Server-Sent Events
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -289,13 +584,20 @@ func (s *Server) Start(ctx context.Context) error {
 		if st == "" {
 			st = "Idle"
 		}
-
+		plan := s.pendingPlan
+		if plan != nil && plan.Status == "pending" {
+			rem := int(time.Until(plan.ScheduledAt).Seconds())
+			if rem < 0 {
+				rem = 0
+			}
+			plan.RemainingSec = rem
+		}
 		initPayload := map[string]interface{}{
-			"report":     s.reportMarkdown,
-			"instances":  s.instances,
-			"updated_at": "",
-			"next_scan":  "",
-			"status":     st,
+			"report":       s.reportMarkdown,
+			"updated_at":   "",
+			"next_scan":    "",
+			"status":       st,
+			"pending_plan": plan,
 		}
 		if !s.updatedAt.IsZero() {
 			initPayload["updated_at"] = s.updatedAt.Format(time.RFC3339)

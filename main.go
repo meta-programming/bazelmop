@@ -155,7 +155,14 @@ func resolveRootPath() {
 		if err != nil {
 			log.Fatalf("Error: failed to resolve user home directory: %v", err)
 		}
-		rootPath = filepath.Join(home, ".cache", "bazel")
+		defaultPath := filepath.Join(home, ".cache", "bazel")
+		if _, err := os.Stat(defaultPath); err == nil {
+			rootPath = defaultPath
+		} else if _, err := os.Stat("/media/red/extra/bazel"); err == nil {
+			rootPath = "/media/red/extra/bazel"
+		} else {
+			rootPath = defaultPath
+		}
 	} else if strings.HasPrefix(rootPath, "~") {
 		home, err := os.UserHomeDir()
 		if err == nil {
@@ -265,6 +272,7 @@ func runDaemon() {
 
 	if webEnabled {
 		webSrv = web.NewServer(webHost, webPort)
+		webSrv.SetDedupeConfig(rootPath, config)
 		go func() {
 			if err := webSrv.Start(ctx); err != nil {
 				log.Printf("Web server error: %v", err)
@@ -540,7 +548,7 @@ func runOutputBasesPrune(ttlStr, targetFreeStr string, orphanedOnly, execute, in
 
 		if shouldDelete {
 			fmt.Printf("Deleting %s (%s)... ", cand.Path, bazelcas.FormatSize(cand.SizeBytes))
-			err := os.RemoveAll(cand.Path)
+			err := bazelcas.RemoveInstance(cand.Path)
 			if err != nil {
 				fmt.Printf("FAILED: %v\n", err)
 			} else {
