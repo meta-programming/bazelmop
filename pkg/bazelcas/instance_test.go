@@ -236,3 +236,50 @@ func TestFormatRelativeTime(t *testing.T) {
 		t.Errorf("expected '2d ago', got %q", res)
 	}
 }
+
+func TestDiscoverInstancesFlatRoot(t *testing.T) {
+	sys := fstest.MapFS{
+		"0123456789abcdef0123456789abcdef/DO_NOT_BUILD_HERE": &fstest.MapFile{
+			Data: []byte("/home/user/flat-ws\n"),
+		},
+		"cache/repos/v1/content_addressable/sha256/1234/file": &fstest.MapFile{
+			Data: []byte("sample-data"),
+		},
+	}
+
+	insts, err := DiscoverInstances(sys, "/media/red/extra/bazel")
+	if err != nil {
+		t.Fatalf("DiscoverInstances failed: %v", err)
+	}
+
+	if len(insts) != 2 {
+		t.Fatalf("expected 2 instances, got %d", len(insts))
+	}
+
+	foundOB := false
+	foundRepo := false
+	for _, inst := range insts {
+		if inst.Type == TypeOutputBase && inst.ID == "0123456789abcdef0123456789abcdef" {
+			foundOB = true
+			if inst.WorkspacePath != "/home/user/flat-ws" {
+				t.Errorf("unexpected workspace path: %q", inst.WorkspacePath)
+			}
+			if inst.Path != "/media/red/extra/bazel/0123456789abcdef0123456789abcdef" {
+				t.Errorf("unexpected instance path: %q", inst.Path)
+			}
+		}
+		if inst.Type == TypeRepoCache {
+			foundRepo = true
+			if inst.Path != "/media/red/extra/bazel/cache/repos/v1/content_addressable" {
+				t.Errorf("unexpected repo cache path: %q", inst.Path)
+			}
+		}
+	}
+
+	if !foundOB {
+		t.Errorf("expected to find output base in flat root")
+	}
+	if !foundRepo {
+		t.Errorf("expected to find repo cache in flat root")
+	}
+}
