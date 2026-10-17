@@ -147,15 +147,27 @@ func DiscoverInstances(sys fs.FS, rootPath string) ([]*Instance, error) {
 
 	var jobs []scanJob
 
+	var userRelDirs []string
 	for _, entry := range entries {
-		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "_bazel_") {
-			continue
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), "_bazel_") {
+			userRelDirs = append(userRelDirs, entry.Name())
 		}
+	}
 
-		userRelDir := entry.Name()
+	// Flat root fallback: if no _bazel_* directories were found, check if output bases
+	// or repo cache reside directly under rootPath.
+	if len(userRelDirs) == 0 {
+		for _, entry := range entries {
+			if entry.IsDir() && (isMD5(entry.Name()) || entry.Name() == "cache") {
+				userRelDirs = append(userRelDirs, ".")
+				break
+			}
+		}
+	}
 
-		// 1. Discover Repo Cache under _bazel_<user>/cache/repos/v1/content_addressable
-		repoCacheRelDir := filepath.Join(userRelDir, "cache", "repos", "v1", "content_addressable")
+	for _, userRelDir := range userRelDirs {
+		// 1. Discover Repo Cache under <userRelDir>/cache/repos/v1/content_addressable
+		repoCacheRelDir := filepath.Clean(filepath.Join(userRelDir, "cache", "repos", "v1", "content_addressable"))
 		if repoInfo, err := fs.Stat(sys, repoCacheRelDir); err == nil && repoInfo.IsDir() {
 			jobs = append(jobs, scanJob{
 				relDir:   repoCacheRelDir,
@@ -167,9 +179,15 @@ func DiscoverInstances(sys fs.FS, rootPath string) ([]*Instance, error) {
 		}
 
 		// 2. Discover Output Base instances (32-character MD5 subdirectories)
-		userEntries, err := fs.ReadDir(sys, userRelDir)
-		if err != nil {
-			continue
+		var userEntries []fs.DirEntry
+		if userRelDir == "." {
+			userEntries = entries
+		} else {
+			var err error
+			userEntries, err = fs.ReadDir(sys, userRelDir)
+			if err != nil {
+				continue
+			}
 		}
 
 		for _, userSub := range userEntries {
@@ -178,7 +196,7 @@ func DiscoverInstances(sys fs.FS, rootPath string) ([]*Instance, error) {
 			}
 
 			md5Str := userSub.Name()
-			outputBaseRelDir := filepath.Join(userRelDir, md5Str)
+			outputBaseRelDir := filepath.Clean(filepath.Join(userRelDir, md5Str))
 
 			wsPath := ResolveWorkspacePath(sys, outputBaseRelDir)
 			status := StatusOrphaned

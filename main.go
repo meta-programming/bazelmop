@@ -37,13 +37,13 @@ var (
 	webPort    string
 
 	// Subcommand flags
-	listFormat     string
-	listOrphaned   bool
-	gcTTL          string
-	gcTargetFree   string
-	gcOrphaned     bool
-	gcExecute      bool
-	gcInteractive  bool
+	listFormat    string
+	listOrphaned  bool
+	gcTTL         string
+	gcTargetFree  string
+	gcOrphaned    bool
+	gcExecute     bool
+	gcInteractive bool
 )
 
 func main() {
@@ -540,7 +540,7 @@ func runOutputBasesPrune(ttlStr, targetFreeStr string, orphanedOnly, execute, in
 
 		if shouldDelete {
 			fmt.Printf("Deleting %s (%s)... ", cand.Path, bazelcas.FormatSize(cand.SizeBytes))
-			err := os.RemoveAll(cand.Path)
+			err := safeRemoveAll(cand.Path)
 			if err != nil {
 				fmt.Printf("FAILED: %v\n", err)
 			} else {
@@ -556,4 +556,18 @@ func runOutputBasesPrune(ttlStr, targetFreeStr string, orphanedOnly, execute, in
 	fmt.Println("--------------------------------------------------------------------------------")
 	fmt.Printf("Garbage Collection Complete: Removed %d instances, reclaimed %s of disk space.\n", deletedCount, bazelcas.FormatSize(deletedBytes))
 	fmt.Println("================================================================================")
+}
+
+func safeRemoveAll(path string) error {
+	err := os.RemoveAll(path)
+	if err == nil {
+		return nil
+	}
+	// Bazel frequently marks files and directories as read-only.
+	// Make all files and directories user-writable and retry deletion.
+	_ = filepath.WalkDir(path, func(p string, d os.DirEntry, walkErr error) error {
+		_ = os.Chmod(p, 0700)
+		return nil
+	})
+	return os.RemoveAll(path)
 }
