@@ -1,0 +1,114 @@
+syntax = "proto3";
+
+package bazelmop.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/meta-programming/bazelmop/gen/bazelmop/v1;bazelmopv1";
+
+// BazelmopService is the bazelmop daemon's API. The web dashboard calls it
+// with the Connect JSON protocol; Go clients can use gRPC.
+service BazelmopService {
+  // GetStatus returns what the daemon is doing now and its latest report.
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // WatchStatus sends the current status, then a new one each time it
+  // changes, until the client disconnects.
+  rpc WatchStatus(WatchStatusRequest) returns (stream WatchStatusResponse);
+
+  // ListOutputBases returns the output bases and repository caches found
+  // under the cache root by the latest scan.
+  rpc ListOutputBases(ListOutputBasesRequest) returns (ListOutputBasesResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // DeleteOutputBases removes output bases from disk. Only callers on the
+  // same machine may use it.
+  rpc DeleteOutputBases(DeleteOutputBasesRequest) returns (DeleteOutputBasesResponse);
+}
+
+// DaemonStatus is a snapshot of the daemon.
+message DaemonStatus {
+  // What the daemon is doing, such as "Idle" or "Hashing files: 10/20".
+  string activity = 1;
+  // When the latest deduplication report was produced. Unset before the
+  // first run finishes.
+  google.protobuf.Timestamp report_time = 2;
+  // When the next run is scheduled to start.
+  google.protobuf.Timestamp next_run_time = 3;
+  // The latest deduplication report, as Markdown.
+  string report_markdown = 4;
+  // When the list returned by ListOutputBases last changed. A client that
+  // shows output bases fetches them again when this changes.
+  google.protobuf.Timestamp output_bases_update_time = 5;
+}
+
+message GetStatusRequest {}
+
+message GetStatusResponse {
+  DaemonStatus status = 1;
+}
+
+message WatchStatusRequest {}
+
+message WatchStatusResponse {
+  DaemonStatus status = 1;
+}
+
+// OutputBaseKind says what a directory under the cache root holds.
+enum OutputBaseKind {
+  OUTPUT_BASE_KIND_UNSPECIFIED = 0;
+  // A Bazel output base for one workspace.
+  OUTPUT_BASE_KIND_OUTPUT_BASE = 1;
+  // The repository cache shared by output bases.
+  OUTPUT_BASE_KIND_REPOSITORY_CACHE = 2;
+}
+
+// OutputBase is one directory under the cache root.
+message OutputBase {
+  // The output base's MD5 directory name, or the repository cache's
+  // directory name.
+  string id = 1;
+  OutputBaseKind kind = 2;
+  // Absolute path of the directory.
+  string path = 3;
+  // The workspace the output base belongs to. Empty for a repository cache
+  // or when it cannot be determined.
+  string workspace_path = 4;
+  // Whether workspace_path still exists on disk.
+  bool workspace_exists = 5;
+  // Apparent size of all files, in bytes. Files shared with other output
+  // bases are counted in full.
+  int64 size_bytes = 6;
+  int64 file_count = 7;
+  // Latest modification time of any file.
+  google.protobuf.Timestamp last_modified_time = 8;
+  // Latest build or Bazel server start. Unset if never seen.
+  google.protobuf.Timestamp last_build_time = 9;
+  // Latest test log or result. Unset if never seen.
+  google.protobuf.Timestamp last_test_time = 10;
+}
+
+message ListOutputBasesRequest {}
+
+message ListOutputBasesResponse {
+  repeated OutputBase output_bases = 1;
+}
+
+message DeleteOutputBasesRequest {
+  // IDs as returned in OutputBase.id.
+  repeated string ids = 1;
+}
+
+message DeleteOutputBasesResponse {
+  repeated string deleted_ids = 1;
+  repeated DeleteFailure failures = 2;
+}
+
+// DeleteFailure says why one output base was not deleted.
+message DeleteFailure {
+  string id = 1;
+  string message = 2;
+}
