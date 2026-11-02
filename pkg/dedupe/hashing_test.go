@@ -2,7 +2,6 @@ package dedupe
 
 import (
 	"crypto/sha256"
-	"encoding/hex"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -39,10 +38,9 @@ func TestComputeSHA256MatchesReference(t *testing.T) {
 				t.Fatalf("computeSHA256 failed: %v", err)
 			}
 
-			sum := sha256.Sum256(content)
-			want := hex.EncodeToString(sum[:])
+			want := sha256.Sum256(content)
 			if got != want {
-				t.Errorf("digest mismatch for %d bytes:\n got %s\nwant %s", size, got, want)
+				t.Errorf("digest mismatch for %d bytes:\n got %x\nwant %x", size, got, want)
 			}
 		})
 	}
@@ -66,7 +64,7 @@ func TestComputeSHA256Repeatable(t *testing.T) {
 			t.Fatalf("repeat %d failed: %v", i, err)
 		}
 		if again != first {
-			t.Fatalf("repeat %d returned %s, want %s", i, again, first)
+			t.Fatalf("repeat %d returned %x, want %x", i, again, first)
 		}
 	}
 }

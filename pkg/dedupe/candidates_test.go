@@ -26,7 +26,7 @@ func TestSelectHashCandidates(t *testing.T) {
 		{Path: "c3", Size: 20, Dev: 1, Inode: 3},
 		// Inode 4 is known from the repository cache through one of its paths.
 		{Path: "d1", Size: 30, Dev: 1, Inode: 4},
-		{Path: "d2", Size: 30, Dev: 1, Inode: 4, Hash: "cas"},
+		{Path: "d2", Size: 30, Dev: 1, Inode: 4, Hash: [32]byte{1}},
 		{Path: "e", Size: 30, Dev: 1, Inode: 5},
 		// Unique size: nothing to compare against.
 		{Path: "f", Size: 40, Dev: 1, Inode: 6},
@@ -49,7 +49,7 @@ func TestSelectHashCandidates(t *testing.T) {
 
 func TestShareInodeHashes(t *testing.T) {
 	entries := []FileEntry{
-		{Path: "a1", Size: 10, Dev: 1, Inode: 1, Hash: "x"},
+		{Path: "a1", Size: 10, Dev: 1, Inode: 1, Hash: [32]byte{2}},
 		{Path: "a2", Size: 10, Dev: 1, Inode: 1},
 		{Path: "b", Size: 10, Dev: 1, Inode: 2},
 		// Same inode number on another device is a different file.
@@ -59,10 +59,30 @@ func TestShareInodeHashes(t *testing.T) {
 
 	shareInodeHashes(entries, groupBySize(entries))
 
-	want := map[string]string{"a1": "x", "a2": "x", "b": "", "z": "", "z2": ""}
+	want := map[string][32]byte{"a1": {2}, "a2": {2}}
 	for _, e := range entries {
 		if e.Hash != want[e.Path] {
-			t.Errorf("%s has hash %q, want %q", e.Path, e.Hash, want[e.Path])
+			t.Errorf("%s has hash %x, want %x", e.Path, e.Hash, want[e.Path])
+		}
+	}
+}
+
+func TestExtractWorkspace(t *testing.T) {
+	ws := "0123456789abcdef0123456789abcdef"
+	cases := []struct {
+		path, user, workspace string
+	}{
+		{"/root/_bazel_red/" + ws + "/external/x", "red", ws},
+		{"/root/_bazel_red/" + ws, "red", ws},
+		{"/root/_bazel_red", "unknown", "unknown"},
+		{"/root/_bazel_red/short/external/x", "unknown", "unknown"},
+		{"/root/_bazel_red/short/_bazel_bob/" + ws + "/x", "bob", ws},
+		{"/root/other/" + ws + "/x", "unknown", "unknown"},
+	}
+	for _, c := range cases {
+		user, workspace := extractWorkspace(c.path)
+		if user != c.user || workspace != c.workspace {
+			t.Errorf("extractWorkspace(%q) = %q, %q; want %q, %q", c.path, user, workspace, c.user, c.workspace)
 		}
 	}
 }

@@ -27,7 +27,7 @@ type FileEntry struct {
 	Size  int64
 	Inode uint64
 	Dev   uint64
-	Hash  string // Resolved from CAS or calculated selectively for reporting/matching
+	Hash  [sha256.Size]byte // SHA-256 of the content; all zero until resolved from CAS or hashed
 }
 
 // Config holds runtime options for the deduplication execution.
@@ -44,7 +44,7 @@ type Config struct {
 // Deduplicator manages the walking, matching, and linking process.
 type Deduplicator struct {
 	config Config
-	casMap map[uint64]string // Inode -> SHA-256 hash resolved from repository cache
+	casMap map[uint64][sha256.Size]byte // Inode -> SHA-256 hash resolved from repository cache
 }
 
 func (d *Deduplicator) updateProgress(status string) {
@@ -57,7 +57,7 @@ func (d *Deduplicator) updateProgress(status string) {
 func NewDeduplicator(cfg Config) *Deduplicator {
 	return &Deduplicator{
 		config: cfg,
-		casMap: make(map[uint64]string),
+		casMap: make(map[uint64][sha256.Size]byte),
 	}
 }
 
@@ -77,7 +77,10 @@ func (d *Deduplicator) Scan(ctx context.Context, root string) ([]FileEntry, erro
 		info, err := os.Lstat(path.String())
 		if err == nil {
 			if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-				d.casMap[stat.Ino] = path.Hash()
+				var digest [sha256.Size]byte
+				if n, err := hex.Decode(digest[:], []byte(path.Hash())); err == nil && n == sha256.Size {
+					d.casMap[stat.Ino] = digest
+				}
 			}
 		}
 	}
@@ -140,7 +143,7 @@ type SizeDev struct {
 type HashKey struct {
 	Size int64
 	Dev  uint64
-	Hash string
+	Hash [sha256.Size]byte
 }
 
 // EquivalenceClass represents a group of identical files.
@@ -154,10 +157,11 @@ type EquivalenceClass struct {
 // The file is read once and never revisited, so its pages are released from the
 // page cache on the way out. See [dropPageCache] for why that is not left to
 // the kernel to work out.
-func computeSHA256(path string) (string, error) {
+func computeSHA256(path string) ([sha256.Size]byte, error) {
+	var digest [sha256.Size]byte
 	f, err := os.Open(path)
 	if err != nil {
-		return "", err
+		return digest, err
 	}
 	defer f.Close()
 
@@ -168,10 +172,11 @@ func computeSHA256(path string) (string, error) {
 
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
-		return "", err
+		return digest, err
 	}
 
-	return hex.EncodeToString(h.Sum(nil)), nil
+	h.Sum(digest[:0])
+	return digest, nil
 }
 
 // sameInode reports whether two entries are paths to the same file.
@@ -220,7 +225,7 @@ func selectHashCandidates(entries []FileEntry, sizeGroups map[SizeDev][]int) []i
 			continue
 		}
 		for _, run := range runs {
-			if entries[run[0]].Size == 0 || runHash(entries, run) != "" {
+			if entries[run[0]].Size == 0 || runHash(entries, run) != ([sha256.Size]byte{}) {
 				continue
 			}
 			indicesToHash = append(indicesToHash, run[0])
@@ -237,7 +242,7 @@ func shareInodeHashes(entries []FileEntry, sizeGroups map[SizeDev][]int) {
 		}
 		eachInodeRun(entries, indices, func(run []int) {
 			hash := runHash(entries, run)
-			if hash == "" {
+			if hash == ([sha256.Size]byte{}) {
 				return
 			}
 			for _, idx := range run {
@@ -247,14 +252,14 @@ func shareInodeHashes(entries []FileEntry, sizeGroups map[SizeDev][]int) {
 	}
 }
 
-// runHash returns the first hash known for any path in run, or "".
-func runHash(entries []FileEntry, run []int) string {
+// runHash returns the first hash known for any path in run, or all zero.
+func runHash(entries []FileEntry, run []int) [sha256.Size]byte {
 	for _, idx := range run {
-		if entries[idx].Hash != "" {
+		if entries[idx].Hash != ([sha256.Size]byte{}) {
 			return entries[idx].Hash
 		}
 	}
-	return ""
+	return [sha256.Size]byte{}
 }
 
 // Deduplicate executes matching and link replacement.
@@ -286,11 +291,18 @@ func (d *Deduplicator) Deduplicate(ctx context.Context, entries []FileEntry) (st
 
 	fmt.Printf("Using %d parallel workers to accelerate disk I/O & hashing...\n", numWorkers)
 
-	jobs := make(chan int, len(indicesToHash))
-	for _, idx := range indicesToHash {
-		jobs <- idx
-	}
-	close(jobs)
+	// Fed by a goroutine so the queue does not hold every index at once.
+	jobs := make(chan int, numWorkers)
+	go func() {
+		defer close(jobs)
+		for _, idx := range indicesToHash {
+			select {
+			case jobs <- idx:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 
 	var hashedCount uint64
 	var wg sync.WaitGroup
@@ -341,14 +353,15 @@ func (d *Deduplicator) Deduplicate(ctx context.Context, entries []FileEntry) (st
 	default:
 	}
 
-	// For empty files in candidate groups, assign "empty" hash
+	// Empty files are never read; give them the digest of no bytes.
+	emptyHash := sha256.Sum256(nil)
 	for _, indices := range sizeGroups {
 		if len(indices) < 2 {
 			continue
 		}
 		for _, idx := range indices {
-			if entries[idx].Hash == "" && entries[idx].Size == 0 {
-				entries[idx].Hash = "empty"
+			if entries[idx].Hash == ([sha256.Size]byte{}) && entries[idx].Size == 0 {
+				entries[idx].Hash = emptyHash
 			}
 		}
 	}
@@ -360,13 +373,15 @@ func (d *Deduplicator) Deduplicate(ctx context.Context, entries []FileEntry) (st
 // processMatches groups identical files and executes link swaps.
 func (d *Deduplicator) processMatches(ctx context.Context, entries []FileEntry) (string, error) {
 	// Group by (Size, Dev, Hash)
-	groups := make(map[HashKey][]FileEntry)
-	for _, entry := range entries {
-		if entry.Hash == "" {
+	// Values are indices into entries, so entries are not copied.
+	groups := make(map[HashKey][]int)
+	for i := range entries {
+		entry := &entries[i]
+		if entry.Hash == ([sha256.Size]byte{}) {
 			continue // Skip files that failed to hash or are unique-sized
 		}
 		key := HashKey{Size: entry.Size, Dev: entry.Dev, Hash: entry.Hash}
-		groups[key] = append(groups[key], entry)
+		groups[key] = append(groups[key], i)
 	}
 
 	// Track matches to link
@@ -378,12 +393,12 @@ func (d *Deduplicator) processMatches(ctx context.Context, entries []FileEntry) 
 		}
 
 		// Partition the group based on inodes.
-		representative := group[0]
+		representative := entries[group[0]]
 		var duplicates []FileEntry
 
-		for _, file := range group[1:] {
-			if file.Inode != representative.Inode {
-				duplicates = append(duplicates, file)
+		for _, idx := range group[1:] {
+			if entries[idx].Inode != representative.Inode {
+				duplicates = append(duplicates, entries[idx])
 			}
 		}
 
@@ -393,25 +408,6 @@ func (d *Deduplicator) processMatches(ctx context.Context, entries []FileEntry) 
 				Duplicates:     duplicates,
 			})
 		}
-	}
-
-	// Calculate space statistics
-	var totalApparentSize int64
-	var totalDiskFootprint int64
-	var totalReclaimable int64
-
-	inodeSizes := make(map[uint64]int64)
-	for _, entry := range entries {
-		totalApparentSize += entry.Size
-		inodeSizes[entry.Inode] = entry.Size
-	}
-
-	for _, sz := range inodeSizes {
-		totalDiskFootprint += sz
-	}
-
-	for _, match := range matchesToLink {
-		totalReclaimable += int64(len(match.Duplicates)) * match.Representative.Size
 	}
 
 	// Generate report
@@ -462,17 +458,23 @@ func (d *Deduplicator) processMatches(ctx context.Context, entries []FileEntry) 
 // extractWorkspace parses the username and workspace MD5 hash from the file path.
 func extractWorkspace(path string) (string, string) {
 	// Expected format: .../_bazel_[username]/[workspace_md5]/...
-	parts := strings.Split(path, string(os.PathSeparator))
-	for i, part := range parts {
-		if strings.HasPrefix(part, "_bazel_") && i+1 < len(parts) {
-			username := strings.TrimPrefix(part, "_bazel_")
-			workspace := parts[i+1]
+	// Walks the path in place; it runs for every scanned file, so it does
+	// not allocate a slice of segments.
+	const sep = string(os.PathSeparator)
+	rest := path
+	for {
+		part, after, found := strings.Cut(rest, sep)
+		if !found {
+			return "unknown", "unknown"
+		}
+		if username, ok := strings.CutPrefix(part, "_bazel_"); ok {
+			workspace, _, _ := strings.Cut(after, sep)
 			if len(workspace) == 32 {
 				return username, workspace
 			}
 		}
+		rest = after
 	}
-	return "unknown", "unknown"
 }
 
 func truncateMD5(s string) string {
@@ -690,7 +692,7 @@ func (d *Deduplicator) printLargeDuplicates(matches []EquivalenceClass) {
 
 	for i := 0; i < limit; i++ {
 		match := filtered[i]
-		fmt.Printf("Large Duplicate Group: sha256:%s (Size: %s, %d instances)\n",
+		fmt.Printf("Large Duplicate Group: sha256:%x (Size: %s, %d instances)\n",
 			match.Representative.Hash, formatSize(match.Representative.Size), len(match.Duplicates)+1)
 
 		// Print representative
