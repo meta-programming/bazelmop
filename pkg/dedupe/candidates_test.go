@@ -77,7 +77,9 @@ func TestExtractWorkspace(t *testing.T) {
 		{"/root/_bazel_red", "unknown", "unknown"},
 		{"/root/_bazel_red/short/external/x", "unknown", "unknown"},
 		{"/root/_bazel_red/short/_bazel_bob/" + ws + "/x", "bob", ws},
-		{"/root/other/" + ws + "/x", "unknown", "unknown"},
+		// Flat output user root, as with --output_user_root=/media/x/bazel.
+		{"/media/x/bazel/" + ws + "/execroot/_main/bazel-out/k8/bin/y", "unknown", ws},
+		{"/root/other/ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ/x", "unknown", "unknown"},
 	}
 	for _, c := range cases {
 		user, workspace := extractWorkspace(c.path)

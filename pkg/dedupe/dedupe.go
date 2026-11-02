@@ -570,25 +570,45 @@ func (d *Deduplicator) processMatches(ctx context.Context, entries []FileEntry) 
 }
 
 // extractWorkspace parses the username and workspace MD5 hash from the file path.
+//
+// Two layouts are recognised:
+//
+//   - .../_bazel_[username]/[workspace_md5]/... (the default output user root)
+//   - .../[workspace_md5]/...                    (a flat --output_user_root)
+//
+// In the flat layout there is no username in the path, so it is "unknown".
+// The path is walked in place because this runs for every scanned file.
 func extractWorkspace(path string) (string, string) {
-	// Expected format: .../_bazel_[username]/[workspace_md5]/...
-	// Walks the path in place; it runs for every scanned file, so it does
-	// not allocate a slice of segments.
 	const sep = string(os.PathSeparator)
+	username := "unknown"
 	rest := path
 	for {
 		part, after, found := strings.Cut(rest, sep)
+		if user, ok := strings.CutPrefix(part, "_bazel_"); ok {
+			username = user
+		} else if isWorkspaceMD5(part) {
+			return username, part
+		}
 		if !found {
 			return "unknown", "unknown"
 		}
-		if username, ok := strings.CutPrefix(part, "_bazel_"); ok {
-			workspace, _, _ := strings.Cut(after, sep)
-			if len(workspace) == 32 {
-				return username, workspace
-			}
-		}
 		rest = after
 	}
+}
+
+// isWorkspaceMD5 reports whether s looks like the MD5 directory name Bazel
+// gives an output base: 32 lowercase hex digits.
+func isWorkspaceMD5(s string) bool {
+	if len(s) != 32 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func truncateMD5(s string) string {
