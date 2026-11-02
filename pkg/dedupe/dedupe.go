@@ -174,6 +174,89 @@ func computeSHA256(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// sameInode reports whether two entries are paths to the same file.
+func sameInode(a, b *FileEntry) bool {
+	return a.Dev == b.Dev && a.Inode == b.Inode
+}
+
+// eachInodeRun sorts indices so that paths to one inode are adjacent, then
+// calls fn once for each run of paths that share an inode.
+func eachInodeRun(entries []FileEntry, indices []int, fn func(run []int)) {
+	sort.Slice(indices, func(i, j int) bool {
+		a, b := &entries[indices[i]], &entries[indices[j]]
+		if a.Dev != b.Dev {
+			return a.Dev < b.Dev
+		}
+		return a.Inode < b.Inode
+	})
+	start := 0
+	for i := 1; i <= len(indices); i++ {
+		if i == len(indices) || !sameInode(&entries[indices[start]], &entries[indices[i]]) {
+			fn(indices[start:i])
+			start = i
+		}
+	}
+}
+
+// selectHashCandidates returns the indices of the files that must be read to
+// find duplicates.
+//
+// Hard-linked paths share an inode and so share content. Only one path per
+// inode is returned, and only in size groups that hold at least two inodes. A
+// group whose paths are all one inode is already deduplicated. An inode with a
+// path whose hash is known from the repository cache is not returned. Empty
+// files are not returned.
+func selectHashCandidates(entries []FileEntry, sizeGroups map[SizeDev][]int) []int {
+	var indicesToHash []int
+	for _, indices := range sizeGroups {
+		if len(indices) < 2 {
+			continue
+		}
+		var runs [][]int
+		eachInodeRun(entries, indices, func(run []int) {
+			runs = append(runs, run)
+		})
+		if len(runs) < 2 {
+			continue
+		}
+		for _, run := range runs {
+			if entries[run[0]].Size == 0 || runHash(entries, run) != "" {
+				continue
+			}
+			indicesToHash = append(indicesToHash, run[0])
+		}
+	}
+	return indicesToHash
+}
+
+// shareInodeHashes copies each known hash to the other paths of its inode.
+func shareInodeHashes(entries []FileEntry, sizeGroups map[SizeDev][]int) {
+	for _, indices := range sizeGroups {
+		if len(indices) < 2 {
+			continue
+		}
+		eachInodeRun(entries, indices, func(run []int) {
+			hash := runHash(entries, run)
+			if hash == "" {
+				return
+			}
+			for _, idx := range run {
+				entries[idx].Hash = hash
+			}
+		})
+	}
+}
+
+// runHash returns the first hash known for any path in run, or "".
+func runHash(entries []FileEntry, run []int) string {
+	for _, idx := range run {
+		if entries[idx].Hash != "" {
+			return entries[idx].Hash
+		}
+	}
+	return ""
+}
+
 // Deduplicate executes matching and link replacement.
 func (d *Deduplicator) Deduplicate(ctx context.Context, entries []FileEntry) (string, error) {
 	// 1. Group by (Size, Dev)
@@ -183,24 +266,15 @@ func (d *Deduplicator) Deduplicate(ctx context.Context, entries []FileEntry) (st
 		sizeGroups[key] = append(sizeGroups[key], i)
 	}
 
-	// 2. Find which files are in groups of size >= 2 and do NOT have their hash pre-resolved
-	var indicesToHash []int
-	for _, indices := range sizeGroups {
-		if len(indices) < 2 {
-			continue
-		}
-		for _, idx := range indices {
-			if entries[idx].Hash == "" && entries[idx].Size > 0 {
-				indicesToHash = append(indicesToHash, idx)
-			}
-		}
-	}
+	// 2. Pick one path per inode to hash, in groups that hold more than one inode
+	indicesToHash := selectHashCandidates(entries, sizeGroups)
 
-	fmt.Printf("Calculating SHA-256 hashes for %d unlinked candidate files (skipping %d empty and %d unique-sized files)...\n",
-		len(indicesToHash), len(entries)-len(indicesToHash)-len(d.casMap), len(entries)-len(indicesToHash))
+	fmt.Printf("Calculating SHA-256 hashes for %d inodes (skipping %d paths that are unique-sized, empty, already hashed or share an inode)...\n",
+		len(indicesToHash), len(entries)-len(indicesToHash))
 	d.updateProgress(fmt.Sprintf("Hashing files: %d Group Candidates...", len(indicesToHash)))
 
 	if len(indicesToHash) == 0 {
+		shareInodeHashes(entries, sizeGroups)
 		return d.processMatches(ctx, entries)
 	}
 
@@ -278,6 +352,7 @@ func (d *Deduplicator) Deduplicate(ctx context.Context, entries []FileEntry) (st
 			}
 		}
 	}
+	shareInodeHashes(entries, sizeGroups)
 
 	return d.processMatches(ctx, entries)
 }
