@@ -19,7 +19,7 @@ import (
 
 // Go embed directives to bundle frontend files into the binary.
 //
-//go:embed assets/index.html assets/marked.min.js
+//go:embed assets/index.html assets/marked.min.js assets/icon.svg
 var assetsFS embed.FS
 
 // Server serves the web dashboard and the daemon's API.
@@ -197,6 +197,17 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(data)
+	})
+
+	mux.HandleFunc("/assets/icon.svg", func(w http.ResponseWriter, r *http.Request) {
+		data, err := assetsFS.ReadFile("assets/icon.svg")
+		if err != nil {
+			http.Error(w, "Failed to read icon.svg asset", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "image/svg+xml")
+		w.Header().Set("Cache-Control", "max-age=86400")
 		_, _ = w.Write(data)
 	})
 
