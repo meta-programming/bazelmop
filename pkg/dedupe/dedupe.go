@@ -1,6 +1,7 @@
 package dedupe
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -28,7 +29,13 @@ type FileEntry struct {
 	Inode uint64
 	Dev   uint64
 	Hash  [sha256.Size]byte // SHA-256 of the content; all zero until resolved from CAS or hashed
+	// Extents is a digest of where the file's bytes sit on disk; all zero
+	// when unknown. See [extentFingerprint].
+	Extents [extentFingerprintSize]byte
 }
+
+// extentFingerprintSize is the length of [FileEntry.Extents].
+const extentFingerprintSize = 16
 
 // Config holds runtime options for the deduplication execution.
 type Config struct {
@@ -179,14 +186,48 @@ func computeSHA256(path string) ([sha256.Size]byte, error) {
 	return digest, nil
 }
 
-// sameInode reports whether two entries are paths to the same file.
-func sameInode(a, b *FileEntry) bool {
-	return a.Dev == b.Dev && a.Inode == b.Inode
+// sameFile reports whether two entries are the same bytes on disk: paths to
+// one inode, or inodes whose extents are known and identical, as a reflink
+// clone's are.
+func sameFile(a, b *FileEntry) bool {
+	if a.Dev != b.Dev {
+		return false
+	}
+	aKnown, bKnown := a.Extents != ([extentFingerprintSize]byte{}), b.Extents != ([extentFingerprintSize]byte{})
+	if aKnown || bKnown {
+		return aKnown && bKnown && a.Extents == b.Extents
+	}
+	return a.Inode == b.Inode
 }
 
-// eachInodeRun sorts indices so that paths to one inode are adjacent, then
-// calls fn once for each run of paths that share an inode.
-func eachInodeRun(entries []FileEntry, indices []int, fn func(run []int)) {
+// eachFileRun sorts indices so that paths to the same bytes on disk (see
+// [sameFile]) are adjacent, then calls fn once for each such run.
+//
+// Extents are read once per inode, so paths to one inode never disagree on
+// whether their extents are known and the runs are well defined.
+func eachFileRun(entries []FileEntry, indices []int, fn func(run []int)) {
+	sort.Slice(indices, func(i, j int) bool {
+		a, b := &entries[indices[i]], &entries[indices[j]]
+		if a.Dev != b.Dev {
+			return a.Dev < b.Dev
+		}
+		if c := bytes.Compare(a.Extents[:], b.Extents[:]); c != 0 {
+			return c < 0
+		}
+		return a.Inode < b.Inode
+	})
+	start := 0
+	for i := 1; i <= len(indices); i++ {
+		if i == len(indices) || !sameFile(&entries[indices[start]], &entries[indices[i]]) {
+			fn(indices[start:i])
+			start = i
+		}
+	}
+}
+
+// inodeRuns returns the runs of indices that share an inode, sorted so that
+// each run is contiguous.
+func inodeRuns(entries []FileEntry, indices []int) [][]int {
 	sort.Slice(indices, func(i, j int) bool {
 		a, b := &entries[indices[i]], &entries[indices[j]]
 		if a.Dev != b.Dev {
@@ -194,23 +235,25 @@ func eachInodeRun(entries []FileEntry, indices []int, fn func(run []int)) {
 		}
 		return a.Inode < b.Inode
 	})
+	var runs [][]int
 	start := 0
 	for i := 1; i <= len(indices); i++ {
-		if i == len(indices) || !sameInode(&entries[indices[start]], &entries[indices[i]]) {
-			fn(indices[start:i])
+		if i == len(indices) || entries[indices[i]].Dev != entries[indices[start]].Dev || entries[indices[i]].Inode != entries[indices[start]].Inode {
+			runs = append(runs, indices[start:i])
 			start = i
 		}
 	}
+	return runs
 }
 
 // selectHashCandidates returns the indices of the files that must be read to
 // find duplicates.
 //
-// Hard-linked paths share an inode and so share content. Only one path per
-// inode is returned, and only in size groups that hold at least two inodes. A
-// group whose paths are all one inode is already deduplicated. An inode with a
-// path whose hash is known from the repository cache is not returned. Empty
-// files are not returned.
+// Hard-linked paths and reflink clones share their bytes on disk (see
+// [sameFile]), so only one path per file is returned, and only in size groups
+// that hold at least two distinct files. A group whose paths are all one file
+// is already deduplicated. A file with a path whose hash is known from the
+// repository cache is not returned. Empty files are not returned.
 func selectHashCandidates(entries []FileEntry, sizeGroups map[SizeDev][]int) []int {
 	var indicesToHash []int
 	for _, indices := range sizeGroups {
@@ -218,7 +261,7 @@ func selectHashCandidates(entries []FileEntry, sizeGroups map[SizeDev][]int) []i
 			continue
 		}
 		var runs [][]int
-		eachInodeRun(entries, indices, func(run []int) {
+		eachFileRun(entries, indices, func(run []int) {
 			runs = append(runs, run)
 		})
 		if len(runs) < 2 {
@@ -234,13 +277,13 @@ func selectHashCandidates(entries []FileEntry, sizeGroups map[SizeDev][]int) []i
 	return indicesToHash
 }
 
-// shareInodeHashes copies each known hash to the other paths of its inode.
-func shareInodeHashes(entries []FileEntry, sizeGroups map[SizeDev][]int) {
+// shareFileHashes copies each known hash to the other paths of its file.
+func shareFileHashes(entries []FileEntry, sizeGroups map[SizeDev][]int) {
 	for _, indices := range sizeGroups {
 		if len(indices) < 2 {
 			continue
 		}
-		eachInodeRun(entries, indices, func(run []int) {
+		eachFileRun(entries, indices, func(run []int) {
 			hash := runHash(entries, run)
 			if hash == ([sha256.Size]byte{}) {
 				return
@@ -262,6 +305,65 @@ func runHash(entries []FileEntry, run []int) [sha256.Size]byte {
 	return [sha256.Size]byte{}
 }
 
+// readExtents fills in [FileEntry.Extents] for every non-empty file in a
+// size group with at least two inodes. It reads one path per inode and copies
+// the result to the inode's other paths.
+func (d *Deduplicator) readExtents(ctx context.Context, entries []FileEntry, sizeGroups map[SizeDev][]int) error {
+	var runs [][]int
+	for _, indices := range sizeGroups {
+		if len(indices) < 2 || entries[indices[0]].Size == 0 {
+			continue
+		}
+		if r := inodeRuns(entries, indices); len(r) >= 2 {
+			runs = append(runs, r...)
+		}
+	}
+	if len(runs) == 0 {
+		return nil
+	}
+
+	fmt.Printf("Reading extent maps for %d inodes...\n", len(runs))
+	d.updateProgress(fmt.Sprintf("Reading extent maps: %d inodes...", len(runs)))
+
+	jobs := make(chan []int, 64)
+	go func() {
+		defer close(jobs)
+		for _, run := range runs {
+			select {
+			case jobs <- run:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	var known uint64
+	var wg sync.WaitGroup
+	for w := 0; w < max(runtime.NumCPU()*2, 8); w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for run := range jobs {
+				fp, ok := extentFingerprint(entries[run[0]].Path)
+				if !ok {
+					continue
+				}
+				atomic.AddUint64(&known, 1)
+				for _, idx := range run {
+					entries[idx].Extents = fp
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	fmt.Printf("Extent maps known for %d of %d inodes.\n", known, len(runs))
+	return nil
+}
+
 // Deduplicate executes matching and link replacement.
 func (d *Deduplicator) Deduplicate(ctx context.Context, entries []FileEntry) (string, error) {
 	// 1. Group by (Size, Dev)
@@ -271,15 +373,20 @@ func (d *Deduplicator) Deduplicate(ctx context.Context, entries []FileEntry) (st
 		sizeGroups[key] = append(sizeGroups[key], i)
 	}
 
-	// 2. Pick one path per inode to hash, in groups that hold more than one inode
+	// 2. Read where each candidate's bytes sit on disk, to recognise clones
+	if err := d.readExtents(ctx, entries, sizeGroups); err != nil {
+		return "", err
+	}
+
+	// 3. Pick one path per file to hash, in groups that hold more than one file
 	indicesToHash := selectHashCandidates(entries, sizeGroups)
 
-	fmt.Printf("Calculating SHA-256 hashes for %d inodes (skipping %d paths that are unique-sized, empty, already hashed or share an inode)...\n",
+	fmt.Printf("Calculating SHA-256 hashes for %d files (skipping %d paths that are unique-sized, empty, already hashed or share their bytes on disk)...\n",
 		len(indicesToHash), len(entries)-len(indicesToHash))
 	d.updateProgress(fmt.Sprintf("Hashing files: %d Group Candidates...", len(indicesToHash)))
 
 	if len(indicesToHash) == 0 {
-		shareInodeHashes(entries, sizeGroups)
+		shareFileHashes(entries, sizeGroups)
 		return d.processMatches(ctx, entries)
 	}
 
@@ -365,7 +472,7 @@ func (d *Deduplicator) Deduplicate(ctx context.Context, entries []FileEntry) (st
 			}
 		}
 	}
-	shareInodeHashes(entries, sizeGroups)
+	shareFileHashes(entries, sizeGroups)
 
 	return d.processMatches(ctx, entries)
 }
@@ -392,12 +499,19 @@ func (d *Deduplicator) processMatches(ctx context.Context, entries []FileEntry) 
 			continue
 		}
 
-		// Partition the group based on inodes.
-		representative := entries[group[0]]
+		// The file with the most paths is kept, so the fewest paths are
+		// relinked. Paths that already share its bytes are not duplicates.
+		var largest []int
+		eachFileRun(entries, group, func(run []int) {
+			if len(run) > len(largest) {
+				largest = run
+			}
+		})
+		representative := entries[largest[0]]
 		var duplicates []FileEntry
 
-		for _, idx := range group[1:] {
-			if entries[idx].Inode != representative.Inode {
+		for _, idx := range group {
+			if !sameFile(&entries[idx], &representative) {
 				duplicates = append(duplicates, entries[idx])
 			}
 		}

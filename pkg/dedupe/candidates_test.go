@@ -57,7 +57,7 @@ func TestShareInodeHashes(t *testing.T) {
 		{Path: "z2", Size: 10, Dev: 2, Inode: 9},
 	}
 
-	shareInodeHashes(entries, groupBySize(entries))
+	shareFileHashes(entries, groupBySize(entries))
 
 	want := map[string][32]byte{"a1": {2}, "a2": {2}}
 	for _, e := range entries {
