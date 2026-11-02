@@ -87,4 +87,3 @@ func TestSortableOutputBasesTableHeaders(t *testing.T) {
 		}
 	}
 }
-

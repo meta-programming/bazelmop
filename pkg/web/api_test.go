@@ -15,6 +15,8 @@ import (
 	bazelmopv1 "github.com/meta-programming/bazelmop/gen/bazelmop/v1"
 	"github.com/meta-programming/bazelmop/gen/bazelmop/v1/bazelmopv1connect"
 	"github.com/meta-programming/bazelmop/pkg/bazelcas"
+	"github.com/meta-programming/bazelmop/pkg/dedupe"
+	"github.com/meta-programming/bazelmop/pkg/runlog"
 )
 
 func newTestAPI(t *testing.T) (*Server, bazelmopv1connect.BazelmopServiceClient) {
@@ -142,5 +144,54 @@ func TestMutationsAreLocalOnly(t *testing.T) {
 		if w.Code != c.want {
 			t.Errorf("%s: status %d, want %d", c.name, w.Code, c.want)
 		}
+	}
+}
+
+func TestStatusReportsPhase(t *testing.T) {
+	s, client := newTestAPI(t)
+	s.UpdateProgress(dedupe.Progress{Phase: dedupe.PhaseScan, Message: "Scanning directories..."})
+	s.UpdateProgress(dedupe.Progress{Phase: dedupe.PhaseHash, Done: 3, Total: 10, Message: "Hashing files: 3/10"})
+
+	res, err := client.GetStatus(context.Background(), connect.NewRequest(&bazelmopv1.GetStatusRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := res.Msg.GetStatus()
+	if st.GetPhase() != bazelmopv1.RunPhase_RUN_PHASE_HASH || st.GetPhaseDone() != 3 || st.GetPhaseTotal() != 10 {
+		t.Errorf("phase = %v %d/%d", st.GetPhase(), st.GetPhaseDone(), st.GetPhaseTotal())
+	}
+	if st.GetRunStartTime() == nil || st.GetPhaseStartTime() == nil || st.GetRunStartTime().AsTime().After(st.GetPhaseStartTime().AsTime()) {
+		t.Errorf("run start %v, phase start %v", st.GetRunStartTime(), st.GetPhaseStartTime())
+	}
+
+	s.UpdateProgress(dedupe.Progress{Phase: dedupe.PhaseIdle, Message: "Idle"})
+	res, err = client.GetStatus(context.Background(), connect.NewRequest(&bazelmopv1.GetStatusRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := res.Msg.GetStatus(); st.GetPhase() != bazelmopv1.RunPhase_RUN_PHASE_IDLE || st.GetRunStartTime() != nil {
+		t.Errorf("after idle: phase %v, run start %v", st.GetPhase(), st.GetRunStartTime())
+	}
+}
+
+func TestListRuns(t *testing.T) {
+	s, client := newTestAPI(t)
+	l, err := runlog.Open(filepath.Join(t.TempDir(), "runs.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetRunLog(l)
+	t0 := time.Date(2026, 11, 2, 7, 0, 0, 0, time.UTC)
+	if err := l.Finish(runlog.Run{ID: "a", Start: t0, End: t0.Add(time.Hour), Outcome: runlog.Completed, LinksCreated: 12, SharedBytes: 1 << 40}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := client.ListRuns(context.Background(), connect.NewRequest(&bazelmopv1.ListRunsRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs := res.Msg.GetRuns()
+	if len(runs) != 1 || runs[0].GetOutcome() != bazelmopv1.RunOutcome_RUN_OUTCOME_COMPLETED || runs[0].GetLinksCreated() != 12 || runs[0].GetSharedBytes() != 1<<40 {
+		t.Errorf("ListRuns = %v", runs)
 	}
 }

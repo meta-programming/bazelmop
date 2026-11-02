@@ -14,6 +14,8 @@ import (
 
 	"github.com/meta-programming/bazelmop/gen/bazelmop/v1/bazelmopv1connect"
 	"github.com/meta-programming/bazelmop/pkg/bazelcas"
+	"github.com/meta-programming/bazelmop/pkg/dedupe"
+	"github.com/meta-programming/bazelmop/pkg/runlog"
 )
 
 // Go embed directives to bundle frontend files into the binary.
@@ -38,6 +40,13 @@ type Server struct {
 	updatedAt          time.Time
 	nextScanAt         time.Time
 	status             string
+	progress           dedupe.Progress
+	runStart           time.Time
+	phaseStart         time.Time
+
+	// Set before Start; read without the lock.
+	root   string      // cache root, for disk usage
+	runLog *runlog.Log // run history; nil if not kept
 
 	// watchers are signalled, without blocking, whenever state changes.
 	// Each reads the state it needs itself.
@@ -84,10 +93,41 @@ func (s *Server) UpdateNextScan(nextScan time.Time) {
 	s.notify()
 }
 
+// SetRoot sets the cache root whose filesystem's usage is reported. Call it
+// before Start.
+func (s *Server) SetRoot(root string) {
+	s.root = root
+}
+
+// SetRunLog sets where ListRuns reads run history. Call it before Start.
+func (s *Server) SetRunLog(l *runlog.Log) {
+	s.runLog = l
+}
+
 // UpdateStatus updates the server's status and notifies watchers.
 func (s *Server) UpdateStatus(status string) {
 	s.mu.Lock()
 	s.status = status
+	s.mu.Unlock()
+	s.notify()
+}
+
+// UpdateProgress records how far the current run has got and notifies
+// watchers. A progress in a non-idle phase after an idle one starts a run.
+func (s *Server) UpdateProgress(p dedupe.Progress) {
+	now := time.Now()
+	s.mu.Lock()
+	if p.Phase != s.progress.Phase {
+		s.phaseStart = now
+		if s.progress.Phase == dedupe.PhaseIdle {
+			s.runStart = now
+		}
+	}
+	if p.Phase == dedupe.PhaseIdle {
+		s.runStart, s.phaseStart = time.Time{}, time.Time{}
+	}
+	s.progress = p
+	s.status = p.Message
 	s.mu.Unlock()
 	s.notify()
 }

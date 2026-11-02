@@ -24,6 +24,11 @@ service BazelmopService {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
 
+  // ListRuns returns recent deduplication runs, newest first.
+  rpc ListRuns(ListRunsRequest) returns (ListRunsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
   // DeleteOutputBases removes output bases from disk. Only callers on the
   // same machine may use it.
   rpc DeleteOutputBases(DeleteOutputBasesRequest) returns (DeleteOutputBasesResponse);
@@ -43,6 +48,105 @@ message DaemonStatus {
   // When the list returned by ListOutputBases last changed. A client that
   // shows output bases fetches them again when this changes.
   google.protobuf.Timestamp output_bases_update_time = 5;
+  // The step the current run is on; RUN_PHASE_IDLE between runs.
+  RunPhase phase = 6;
+  // Files or inodes done and in total for the current phase. Total is zero
+  // when it is not known yet, as during the scan.
+  int64 phase_done = 7;
+  int64 phase_total = 8;
+  // When the current run and phase started. Unset when idle.
+  google.protobuf.Timestamp run_start_time = 9;
+  google.protobuf.Timestamp phase_start_time = 10;
+  // Memory charged to the daemon's cgroup. Unset if it cannot be read.
+  MemoryUsage memory = 11;
+  // The filesystem holding the cache root. Unset if it cannot be read.
+  DiskUsage disk = 12;
+}
+
+// RunPhase is a step of a deduplication run.
+enum RunPhase {
+  RUN_PHASE_UNSPECIFIED = 0;
+  RUN_PHASE_IDLE = 1;
+  // Walking the cache root and reading each file's metadata.
+  RUN_PHASE_SCAN = 2;
+  // Reading where candidate files sit on disk, to recognise clones.
+  RUN_PHASE_READ_EXTENTS = 3;
+  // Reading and hashing the files that may be duplicates.
+  RUN_PHASE_HASH = 4;
+  // Replacing duplicates with reflinks or hard links.
+  RUN_PHASE_LINK = 5;
+}
+
+// MemoryUsage is the memory charged to the daemon's cgroup v2 group.
+message MemoryUsage {
+  // Everything charged to the group.
+  int64 current_bytes = 1;
+  // The group's memory.high and memory.max limits; zero means no limit.
+  int64 high_bytes = 2;
+  int64 max_bytes = 3;
+  // Process memory such as the Go heap.
+  int64 anon_bytes = 4;
+  // Page cache.
+  int64 file_bytes = 5;
+  // Kernel memory, mostly the filesystem's inode and directory caches.
+  int64 kernel_bytes = 6;
+  // How often the group went over high_bytes and the kernel reclaimed
+  // memory from it.
+  int64 high_events = 7;
+}
+
+// DiskUsage is the size of a filesystem and the space left on it.
+message DiskUsage {
+  string path = 1;
+  int64 total_bytes = 2;
+  // Space an unprivileged user can still write.
+  int64 free_bytes = 3;
+}
+
+message ListRunsRequest {
+  // Most runs to return; zero returns 20.
+  int32 limit = 1;
+}
+
+message ListRunsResponse {
+  repeated Run runs = 1;
+}
+
+// RunOutcome is how a run ended.
+enum RunOutcome {
+  RUN_OUTCOME_UNSPECIFIED = 0;
+  RUN_OUTCOME_RUNNING = 1;
+  RUN_OUTCOME_COMPLETED = 2;
+  RUN_OUTCOME_FAILED = 3;
+  // The daemon stopped before the run finished, for example because it
+  // was killed.
+  RUN_OUTCOME_INTERRUPTED = 4;
+}
+
+// Run is one deduplication run.
+message Run {
+  string id = 1;
+  google.protobuf.Timestamp start_time = 2;
+  // Unset while running or if interrupted.
+  google.protobuf.Timestamp end_time = 3;
+  RunOutcome outcome = 4;
+  // Why the run failed.
+  string error = 5;
+  int64 files_scanned = 6;
+  int64 files_hashed = 7;
+  int64 links_created = 8;
+  int64 links_failed = 9;
+  // Total size of every scanned file, counted once per path.
+  int64 apparent_bytes = 10;
+  // How much of apparent_bytes was already stored once, because paths
+  // shared an inode or extents, when the run started.
+  int64 shared_bytes = 11;
+  // Size of the duplicates the run found.
+  int64 reclaimable_bytes = 12;
+  // Highest memory charged to the daemon's cgroup during the run.
+  int64 peak_memory_bytes = 13;
+  // Free space on the cache filesystem when the run ended.
+  int64 disk_free_bytes = 14;
 }
 
 message GetStatusRequest {}
