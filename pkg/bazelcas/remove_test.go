@@ -1,4 +1,4 @@
-package main
+package bazelcas
 
 import (
 	"os"
@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestSafeRemoveAll(t *testing.T) {
+func TestRemoveAll(t *testing.T) {
 	tmpDir := t.TempDir()
 	targetDir := filepath.Join(tmpDir, "read-only-tree")
 	subDir := filepath.Join(targetDir, "subdir")
@@ -31,11 +31,11 @@ func TestSafeRemoveAll(t *testing.T) {
 	}
 
 	// Plain RemoveAll on targetDir would fail with permission denied on Linux
-	if err := safeRemoveAll(targetDir); err != nil {
-		t.Fatalf("safeRemoveAll failed: %v", err)
+	if err := RemoveAll(targetDir); err != nil {
+		t.Fatalf("RemoveAll failed: %v", err)
 	}
 
 	if _, err := os.Stat(targetDir); !os.IsNotExist(err) {
-		t.Fatalf("targetDir still exists after safeRemoveAll")
+		t.Fatalf("targetDir still exists after RemoveAll")
 	}
 }
