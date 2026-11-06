@@ -29,7 +29,7 @@ func newTestAPI(t *testing.T) (*Server, bazelmopv1connect.BazelmopServiceClient)
 
 func TestGetStatus(t *testing.T) {
 	s, client := newTestAPI(t)
-	s.UpdateStatus("Hashing files: 1/2")
+	s.UpdateProgress(dedupe.Progress{Phase: dedupe.PhaseHash, Done: 1, Total: 2, Message: "Hashing files: 1/2"})
 	s.UpdateReport("# Report", time.Now().Add(time.Hour))
 
 	res, err := client.GetStatus(context.Background(), connect.NewRequest(&bazelmopv1.GetStatusRequest{}))
@@ -60,7 +60,7 @@ func TestWatchStatusSendsChanges(t *testing.T) {
 		t.Errorf("initial activity = %q, want Idle", got)
 	}
 
-	s.UpdateStatus("Scanning directories...")
+	s.UpdateProgress(dedupe.Progress{Phase: dedupe.PhaseScan, Message: "Scanning directories..."})
 	if !stream.Receive() {
 		t.Fatalf("no status after change: %v", stream.Err())
 	}
@@ -113,7 +113,6 @@ func TestListAndDeleteOutputBases(t *testing.T) {
 
 func TestConnectJSONFromPlainFetch(t *testing.T) {
 	s := NewServer("localhost", "0")
-	s.UpdateStatus("Idle")
 	req := httptest.NewRequest("POST", bazelmopv1connect.BazelmopServiceGetStatusProcedure, strings.NewReader("{}"))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()

@@ -3,7 +3,6 @@ package web
 import (
 	"context"
 	"embed"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -27,8 +26,7 @@ var assetsFS embed.FS
 //
 // The API is [bazelmopv1connect.BazelmopServiceHandler], served with Connect
 // so that browsers can call it as JSON over HTTP/1.1 and Go clients can use
-// gRPC. The older /api/* JSON and server-sent event routes are kept for the
-// current dashboard page.
+// gRPC.
 type Server struct {
 	host string
 	port string
@@ -102,14 +100,6 @@ func (s *Server) SetRoot(root string) {
 // SetRunLog sets where ListRuns reads run history. Call it before Start.
 func (s *Server) SetRunLog(l *runlog.Log) {
 	s.runLog = l
-}
-
-// UpdateStatus updates the server's status and notifies watchers.
-func (s *Server) UpdateStatus(status string) {
-	s.mu.Lock()
-	s.status = status
-	s.mu.Unlock()
-	s.notify()
 }
 
 // UpdateProgress records how far the current run has got and notifies
@@ -189,32 +179,7 @@ func (s *Server) deleteOutputBase(id string) error {
 
 var errNotFound = fmt.Errorf("output base not found")
 
-// legacyPayload is the JSON body of /api/report and each /api/events event.
-func (s *Server) legacyPayload() map[string]interface{} {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	st := s.status
-	if st == "" {
-		st = "Idle"
-	}
-	payload := map[string]interface{}{
-		"report":     s.reportMarkdown,
-		"instances":  s.instances,
-		"updated_at": "",
-		"next_scan":  "",
-		"status":     st,
-	}
-	if !s.updatedAt.IsZero() {
-		payload["updated_at"] = s.updatedAt.Format(time.RFC3339)
-	}
-	if !s.nextScanAt.IsZero() {
-		payload["next_scan"] = s.nextScanAt.Format(time.RFC3339)
-	}
-	return payload
-}
-
-// Handler returns the HTTP handler for the dashboard, the Connect API and
-// the older /api/* routes.
+// Handler returns the HTTP handler for the dashboard and the Connect API.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
@@ -245,76 +210,6 @@ func (s *Server) Handler() http.Handler {
 		_, _ = w.Write(data)
 	})
 
-	mux.HandleFunc("/api/report", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(s.legacyPayload())
-	})
-
-	mux.HandleFunc("/api/instances", func(w http.ResponseWriter, r *http.Request) {
-		s.mu.RLock()
-		insts := s.instances
-		s.mu.RUnlock()
-		if insts == nil {
-			insts = []*bazelcas.Instance{}
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(insts)
-	})
-
-	outputBasesHandler := func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete && r.Method != http.MethodPost {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		id := strings.TrimPrefix(r.URL.Path, "/api/output-bases")
-		id = strings.TrimPrefix(id, "/")
-		if id == "" || id == "delete" {
-			id = r.URL.Query().Get("id")
-		}
-		if id == "" {
-			http.Error(w, "Missing output base id", http.StatusBadRequest)
-			return
-		}
-		if err := s.deleteOutputBase(id); err == errNotFound {
-			http.Error(w, "Output base not found", http.StatusNotFound)
-			return
-		} else if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"success": true,
-			"id":      id,
-			"message": fmt.Sprintf("Deleted output base %s", id),
-		})
-	}
-	mux.HandleFunc("/api/output-bases", outputBasesHandler)
-	mux.HandleFunc("/api/output-bases/", outputBasesHandler)
-
-	mux.HandleFunc("/api/events", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-
-		changed, stop := s.watch()
-		defer stop()
-		for {
-			data, err := json.Marshal(s.legacyPayload())
-			if err != nil {
-				log.Printf("Failed to marshal event data: %v", err)
-				return
-			}
-			fmt.Fprintf(w, "data: %s\n\n", data)
-			w.(http.Flusher).Flush()
-			select {
-			case <-r.Context().Done():
-				return
-			case <-changed:
-			}
-		}
-	})
-
 	return localOnlyForMutations(mux)
 }
 
@@ -322,7 +217,6 @@ func (s *Server) Handler() http.Handler {
 // unless the request comes from this machine and names it as the host.
 var mutatingPaths = []string{
 	bazelmopv1connect.BazelmopServiceDeleteOutputBasesProcedure,
-	"/api/output-bases",
 }
 
 // localOnlyForMutations refuses mutating requests that do not come from a
