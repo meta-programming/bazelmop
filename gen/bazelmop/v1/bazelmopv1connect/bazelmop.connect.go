@@ -42,6 +42,9 @@ const (
 	// BazelmopServiceListOutputBasesProcedure is the fully-qualified name of the BazelmopService's
 	// ListOutputBases RPC.
 	BazelmopServiceListOutputBasesProcedure = "/bazelmop.v1.BazelmopService/ListOutputBases"
+	// BazelmopServiceListRunsProcedure is the fully-qualified name of the BazelmopService's ListRuns
+	// RPC.
+	BazelmopServiceListRunsProcedure = "/bazelmop.v1.BazelmopService/ListRuns"
 	// BazelmopServiceDeleteOutputBasesProcedure is the fully-qualified name of the BazelmopService's
 	// DeleteOutputBases RPC.
 	BazelmopServiceDeleteOutputBasesProcedure = "/bazelmop.v1.BazelmopService/DeleteOutputBases"
@@ -57,6 +60,8 @@ type BazelmopServiceClient interface {
 	// ListOutputBases returns the output bases and repository caches found
 	// under the cache root by the latest scan.
 	ListOutputBases(context.Context, *connect.Request[v1.ListOutputBasesRequest]) (*connect.Response[v1.ListOutputBasesResponse], error)
+	// ListRuns returns recent deduplication runs, newest first.
+	ListRuns(context.Context, *connect.Request[v1.ListRunsRequest]) (*connect.Response[v1.ListRunsResponse], error)
 	// DeleteOutputBases removes output bases from disk. Only callers on the
 	// same machine may use it.
 	DeleteOutputBases(context.Context, *connect.Request[v1.DeleteOutputBasesRequest]) (*connect.Response[v1.DeleteOutputBasesResponse], error)
@@ -93,6 +98,13 @@ func NewBazelmopServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithIdempotency(connect.IdempotencyNoSideEffects),
 			connect.WithClientOptions(opts...),
 		),
+		listRuns: connect.NewClient[v1.ListRunsRequest, v1.ListRunsResponse](
+			httpClient,
+			baseURL+BazelmopServiceListRunsProcedure,
+			connect.WithSchema(bazelmopServiceMethods.ByName("ListRuns")),
+			connect.WithIdempotency(connect.IdempotencyNoSideEffects),
+			connect.WithClientOptions(opts...),
+		),
 		deleteOutputBases: connect.NewClient[v1.DeleteOutputBasesRequest, v1.DeleteOutputBasesResponse](
 			httpClient,
 			baseURL+BazelmopServiceDeleteOutputBasesProcedure,
@@ -107,6 +119,7 @@ type bazelmopServiceClient struct {
 	getStatus         *connect.Client[v1.GetStatusRequest, v1.GetStatusResponse]
 	watchStatus       *connect.Client[v1.WatchStatusRequest, v1.WatchStatusResponse]
 	listOutputBases   *connect.Client[v1.ListOutputBasesRequest, v1.ListOutputBasesResponse]
+	listRuns          *connect.Client[v1.ListRunsRequest, v1.ListRunsResponse]
 	deleteOutputBases *connect.Client[v1.DeleteOutputBasesRequest, v1.DeleteOutputBasesResponse]
 }
 
@@ -125,6 +138,11 @@ func (c *bazelmopServiceClient) ListOutputBases(ctx context.Context, req *connec
 	return c.listOutputBases.CallUnary(ctx, req)
 }
 
+// ListRuns calls bazelmop.v1.BazelmopService.ListRuns.
+func (c *bazelmopServiceClient) ListRuns(ctx context.Context, req *connect.Request[v1.ListRunsRequest]) (*connect.Response[v1.ListRunsResponse], error) {
+	return c.listRuns.CallUnary(ctx, req)
+}
+
 // DeleteOutputBases calls bazelmop.v1.BazelmopService.DeleteOutputBases.
 func (c *bazelmopServiceClient) DeleteOutputBases(ctx context.Context, req *connect.Request[v1.DeleteOutputBasesRequest]) (*connect.Response[v1.DeleteOutputBasesResponse], error) {
 	return c.deleteOutputBases.CallUnary(ctx, req)
@@ -140,6 +158,8 @@ type BazelmopServiceHandler interface {
 	// ListOutputBases returns the output bases and repository caches found
 	// under the cache root by the latest scan.
 	ListOutputBases(context.Context, *connect.Request[v1.ListOutputBasesRequest]) (*connect.Response[v1.ListOutputBasesResponse], error)
+	// ListRuns returns recent deduplication runs, newest first.
+	ListRuns(context.Context, *connect.Request[v1.ListRunsRequest]) (*connect.Response[v1.ListRunsResponse], error)
 	// DeleteOutputBases removes output bases from disk. Only callers on the
 	// same machine may use it.
 	DeleteOutputBases(context.Context, *connect.Request[v1.DeleteOutputBasesRequest]) (*connect.Response[v1.DeleteOutputBasesResponse], error)
@@ -172,6 +192,13 @@ func NewBazelmopServiceHandler(svc BazelmopServiceHandler, opts ...connect.Handl
 		connect.WithIdempotency(connect.IdempotencyNoSideEffects),
 		connect.WithHandlerOptions(opts...),
 	)
+	bazelmopServiceListRunsHandler := connect.NewUnaryHandler(
+		BazelmopServiceListRunsProcedure,
+		svc.ListRuns,
+		connect.WithSchema(bazelmopServiceMethods.ByName("ListRuns")),
+		connect.WithIdempotency(connect.IdempotencyNoSideEffects),
+		connect.WithHandlerOptions(opts...),
+	)
 	bazelmopServiceDeleteOutputBasesHandler := connect.NewUnaryHandler(
 		BazelmopServiceDeleteOutputBasesProcedure,
 		svc.DeleteOutputBases,
@@ -186,6 +213,8 @@ func NewBazelmopServiceHandler(svc BazelmopServiceHandler, opts ...connect.Handl
 			bazelmopServiceWatchStatusHandler.ServeHTTP(w, r)
 		case BazelmopServiceListOutputBasesProcedure:
 			bazelmopServiceListOutputBasesHandler.ServeHTTP(w, r)
+		case BazelmopServiceListRunsProcedure:
+			bazelmopServiceListRunsHandler.ServeHTTP(w, r)
 		case BazelmopServiceDeleteOutputBasesProcedure:
 			bazelmopServiceDeleteOutputBasesHandler.ServeHTTP(w, r)
 		default:
@@ -207,6 +236,10 @@ func (UnimplementedBazelmopServiceHandler) WatchStatus(context.Context, *connect
 
 func (UnimplementedBazelmopServiceHandler) ListOutputBases(context.Context, *connect.Request[v1.ListOutputBasesRequest]) (*connect.Response[v1.ListOutputBasesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bazelmop.v1.BazelmopService.ListOutputBases is not implemented"))
+}
+
+func (UnimplementedBazelmopServiceHandler) ListRuns(context.Context, *connect.Request[v1.ListRunsRequest]) (*connect.Response[v1.ListRunsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bazelmop.v1.BazelmopService.ListRuns is not implemented"))
 }
 
 func (UnimplementedBazelmopServiceHandler) DeleteOutputBases(context.Context, *connect.Request[v1.DeleteOutputBasesRequest]) (*connect.Response[v1.DeleteOutputBasesResponse], error) {

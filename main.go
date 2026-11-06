@@ -19,6 +19,8 @@ import (
 
 	"github.com/meta-programming/bazelmop/pkg/bazelcas"
 	"github.com/meta-programming/bazelmop/pkg/dedupe"
+	"github.com/meta-programming/bazelmop/pkg/runlog"
+	"github.com/meta-programming/bazelmop/pkg/sysstat"
 	"github.com/meta-programming/bazelmop/pkg/web"
 )
 
@@ -35,6 +37,7 @@ var (
 	webEnabled bool
 	webHost    string
 	webPort    string
+	runLogPath string
 
 	// Subcommand flags
 	listFormat    string
@@ -93,6 +96,7 @@ func main() {
 	daemonCmd.Flags().BoolVar(&webEnabled, "web", false, "Enable the web report dashboard server")
 	daemonCmd.Flags().StringVar(&webHost, "web-host", "localhost", "Binding address for the web dashboard")
 	daemonCmd.Flags().StringVar(&webPort, "web-port", "8080", "Port for the web dashboard server")
+	daemonCmd.Flags().StringVar(&runLogPath, "run-log", "", "File that keeps the history of runs (default: $XDG_STATE_HOME/bazelmop/runs.jsonl)")
 
 	var outputBasesCmd = &cobra.Command{
 		Use:     "output-bases",
@@ -239,9 +243,9 @@ func runDaemon() {
 		Verbose:       verbose,
 		ScanExternal:  scanExternal,
 		ScanBazelOut:  scanBazelOut,
-		OnProgress: func(status string) {
+		OnProgress: func(p dedupe.Progress) {
 			if webEnabled && webSrv != nil {
-				webSrv.UpdateStatus(status)
+				webSrv.UpdateProgress(p)
 			}
 		},
 	}
@@ -263,8 +267,21 @@ func runDaemon() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	if runLogPath == "" {
+		var err error
+		if runLogPath, err = runlog.DefaultPath(); err != nil {
+			log.Fatalf("Error: cannot place the run log: %v", err)
+		}
+	}
+	runLog, err := runlog.Open(runLogPath)
+	if err != nil {
+		log.Fatalf("Error: cannot open the run log: %v", err)
+	}
+
 	if webEnabled {
 		webSrv = web.NewServer(webHost, webPort)
+		webSrv.SetRoot(rootPath)
+		webSrv.SetRunLog(runLog)
 		go func() {
 			if err := webSrv.Start(ctx); err != nil {
 				log.Printf("Web server error: %v", err)
@@ -285,8 +302,39 @@ func runDaemon() {
 		fmt.Printf("\n[%s] Starting scheduled scan...\n", start.Format(time.RFC3339))
 		d := dedupe.NewDeduplicator(config)
 
+		run := runlog.Run{ID: start.UTC().Format("20060102T150405Z"), Start: start}
+		if err := runLog.Start(run); err != nil {
+			log.Printf("Warning: cannot record run start: %v", err)
+		}
+		stopSampling := samplePeakMemory(&run.PeakMemoryBytes)
+		finish := func(err error) {
+			stopSampling()
+			st := d.Stats()
+			run.End = time.Now()
+			run.FilesScanned, run.FilesHashed = st.FilesScanned, st.FilesHashed
+			run.LinksCreated, run.LinksFailed = st.LinksCreated, st.LinksFailed
+			run.ApparentBytes, run.SharedBytes, run.ReclaimableBytes = st.ApparentBytes, st.SharedBytes, st.ReclaimableBytes
+			if disk, derr := sysstat.DiskUsage(rootPath); derr == nil {
+				run.DiskFreeBytes = disk.Free
+			}
+			switch {
+			case err == nil:
+				run.Outcome = runlog.Completed
+			case ctx.Err() != nil:
+				// The daemon is stopping; the run is left as running and
+				// reads back as interrupted.
+				return
+			default:
+				run.Outcome, run.Error = runlog.Failed, err.Error()
+			}
+			if lerr := runLog.Finish(run); lerr != nil {
+				log.Printf("Warning: cannot record run end: %v", lerr)
+			}
+		}
+
 		entries, err := d.Scan(ctx, rootPath)
 		if err != nil {
+			finish(err)
 			if ctx.Err() != nil {
 				return
 			}
@@ -296,14 +344,17 @@ func runDaemon() {
 
 		fmt.Printf("Scan completed in %v. Found %d candidate files.\n", time.Since(start), len(entries))
 		if len(entries) == 0 {
+			finish(nil)
 			// Even if 0 files, update next scan timer on dashboard
 			if webEnabled && webSrv != nil {
+				webSrv.UpdateProgress(dedupe.Progress{Phase: dedupe.PhaseIdle, Message: "Idle"})
 				webSrv.UpdateNextScan(nextScan)
 			}
 			return
 		}
 
 		report, err := d.Deduplicate(ctx, entries)
+		finish(err)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -556,4 +607,31 @@ func runOutputBasesPrune(ttlStr, targetFreeStr string, orphanedOnly, execute, in
 	fmt.Println("--------------------------------------------------------------------------------")
 	fmt.Printf("Garbage Collection Complete: Removed %d instances, reclaimed %s of disk space.\n", deletedCount, bazelcas.FormatSize(deletedBytes))
 	fmt.Println("================================================================================")
+}
+
+// samplePeakMemory records the highest memory charged to this process's
+// cgroup into *peak until the returned function is called. The kernel's own
+// memory.peak covers the cgroup's whole life, not one run.
+func samplePeakMemory(peak *int64) (stop func()) {
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for {
+			if m, err := sysstat.SelfMemory(); err == nil && m.Current > *peak {
+				*peak = m.Current
+			}
+			select {
+			case <-done:
+				return
+			case <-t.C:
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-finished
+	}
 }

@@ -22,6 +22,127 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// RunPhase is a step of a deduplication run.
+type RunPhase int32
+
+const (
+	RunPhase_RUN_PHASE_UNSPECIFIED RunPhase = 0
+	RunPhase_RUN_PHASE_IDLE        RunPhase = 1
+	// Walking the cache root and reading each file's metadata.
+	RunPhase_RUN_PHASE_SCAN RunPhase = 2
+	// Reading where candidate files sit on disk, to recognise clones.
+	RunPhase_RUN_PHASE_READ_EXTENTS RunPhase = 3
+	// Reading and hashing the files that may be duplicates.
+	RunPhase_RUN_PHASE_HASH RunPhase = 4
+	// Replacing duplicates with reflinks or hard links.
+	RunPhase_RUN_PHASE_LINK RunPhase = 5
+)
+
+// Enum value maps for RunPhase.
+var (
+	RunPhase_name = map[int32]string{
+		0: "RUN_PHASE_UNSPECIFIED",
+		1: "RUN_PHASE_IDLE",
+		2: "RUN_PHASE_SCAN",
+		3: "RUN_PHASE_READ_EXTENTS",
+		4: "RUN_PHASE_HASH",
+		5: "RUN_PHASE_LINK",
+	}
+	RunPhase_value = map[string]int32{
+		"RUN_PHASE_UNSPECIFIED":  0,
+		"RUN_PHASE_IDLE":         1,
+		"RUN_PHASE_SCAN":         2,
+		"RUN_PHASE_READ_EXTENTS": 3,
+		"RUN_PHASE_HASH":         4,
+		"RUN_PHASE_LINK":         5,
+	}
+)
+
+func (x RunPhase) Enum() *RunPhase {
+	p := new(RunPhase)
+	*p = x
+	return p
+}
+
+func (x RunPhase) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (RunPhase) Descriptor() protoreflect.EnumDescriptor {
+	return file_bazelmop_v1_bazelmop_proto_enumTypes[0].Descriptor()
+}
+
+func (RunPhase) Type() protoreflect.EnumType {
+	return &file_bazelmop_v1_bazelmop_proto_enumTypes[0]
+}
+
+func (x RunPhase) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use RunPhase.Descriptor instead.
+func (RunPhase) EnumDescriptor() ([]byte, []int) {
+	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{0}
+}
+
+// RunOutcome is how a run ended.
+type RunOutcome int32
+
+const (
+	RunOutcome_RUN_OUTCOME_UNSPECIFIED RunOutcome = 0
+	RunOutcome_RUN_OUTCOME_RUNNING     RunOutcome = 1
+	RunOutcome_RUN_OUTCOME_COMPLETED   RunOutcome = 2
+	RunOutcome_RUN_OUTCOME_FAILED      RunOutcome = 3
+	// The daemon stopped before the run finished, for example because it
+	// was killed.
+	RunOutcome_RUN_OUTCOME_INTERRUPTED RunOutcome = 4
+)
+
+// Enum value maps for RunOutcome.
+var (
+	RunOutcome_name = map[int32]string{
+		0: "RUN_OUTCOME_UNSPECIFIED",
+		1: "RUN_OUTCOME_RUNNING",
+		2: "RUN_OUTCOME_COMPLETED",
+		3: "RUN_OUTCOME_FAILED",
+		4: "RUN_OUTCOME_INTERRUPTED",
+	}
+	RunOutcome_value = map[string]int32{
+		"RUN_OUTCOME_UNSPECIFIED": 0,
+		"RUN_OUTCOME_RUNNING":     1,
+		"RUN_OUTCOME_COMPLETED":   2,
+		"RUN_OUTCOME_FAILED":      3,
+		"RUN_OUTCOME_INTERRUPTED": 4,
+	}
+)
+
+func (x RunOutcome) Enum() *RunOutcome {
+	p := new(RunOutcome)
+	*p = x
+	return p
+}
+
+func (x RunOutcome) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (RunOutcome) Descriptor() protoreflect.EnumDescriptor {
+	return file_bazelmop_v1_bazelmop_proto_enumTypes[1].Descriptor()
+}
+
+func (RunOutcome) Type() protoreflect.EnumType {
+	return &file_bazelmop_v1_bazelmop_proto_enumTypes[1]
+}
+
+func (x RunOutcome) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use RunOutcome.Descriptor instead.
+func (RunOutcome) EnumDescriptor() ([]byte, []int) {
+	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{1}
+}
+
 // OutputBaseKind says what a directory under the cache root holds.
 type OutputBaseKind int32
 
@@ -58,11 +179,11 @@ func (x OutputBaseKind) String() string {
 }
 
 func (OutputBaseKind) Descriptor() protoreflect.EnumDescriptor {
-	return file_bazelmop_v1_bazelmop_proto_enumTypes[0].Descriptor()
+	return file_bazelmop_v1_bazelmop_proto_enumTypes[2].Descriptor()
 }
 
 func (OutputBaseKind) Type() protoreflect.EnumType {
-	return &file_bazelmop_v1_bazelmop_proto_enumTypes[0]
+	return &file_bazelmop_v1_bazelmop_proto_enumTypes[2]
 }
 
 func (x OutputBaseKind) Number() protoreflect.EnumNumber {
@@ -71,7 +192,7 @@ func (x OutputBaseKind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use OutputBaseKind.Descriptor instead.
 func (OutputBaseKind) EnumDescriptor() ([]byte, []int) {
-	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{0}
+	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{2}
 }
 
 // DaemonStatus is a snapshot of the daemon.
@@ -89,8 +210,21 @@ type DaemonStatus struct {
 	// When the list returned by ListOutputBases last changed. A client that
 	// shows output bases fetches them again when this changes.
 	OutputBasesUpdateTime *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=output_bases_update_time,json=outputBasesUpdateTime,proto3" json:"output_bases_update_time,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	// The step the current run is on; RUN_PHASE_IDLE between runs.
+	Phase RunPhase `protobuf:"varint,6,opt,name=phase,proto3,enum=bazelmop.v1.RunPhase" json:"phase,omitempty"`
+	// Files or inodes done and in total for the current phase. Total is zero
+	// when it is not known yet, as during the scan.
+	PhaseDone  int64 `protobuf:"varint,7,opt,name=phase_done,json=phaseDone,proto3" json:"phase_done,omitempty"`
+	PhaseTotal int64 `protobuf:"varint,8,opt,name=phase_total,json=phaseTotal,proto3" json:"phase_total,omitempty"`
+	// When the current run and phase started. Unset when idle.
+	RunStartTime   *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=run_start_time,json=runStartTime,proto3" json:"run_start_time,omitempty"`
+	PhaseStartTime *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=phase_start_time,json=phaseStartTime,proto3" json:"phase_start_time,omitempty"`
+	// Memory charged to the daemon's cgroup. Unset if it cannot be read.
+	Memory *MemoryUsage `protobuf:"bytes,11,opt,name=memory,proto3" json:"memory,omitempty"`
+	// The filesystem holding the cache root. Unset if it cannot be read.
+	Disk          *DiskUsage `protobuf:"bytes,12,opt,name=disk,proto3" json:"disk,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *DaemonStatus) Reset() {
@@ -158,6 +292,463 @@ func (x *DaemonStatus) GetOutputBasesUpdateTime() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *DaemonStatus) GetPhase() RunPhase {
+	if x != nil {
+		return x.Phase
+	}
+	return RunPhase_RUN_PHASE_UNSPECIFIED
+}
+
+func (x *DaemonStatus) GetPhaseDone() int64 {
+	if x != nil {
+		return x.PhaseDone
+	}
+	return 0
+}
+
+func (x *DaemonStatus) GetPhaseTotal() int64 {
+	if x != nil {
+		return x.PhaseTotal
+	}
+	return 0
+}
+
+func (x *DaemonStatus) GetRunStartTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.RunStartTime
+	}
+	return nil
+}
+
+func (x *DaemonStatus) GetPhaseStartTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.PhaseStartTime
+	}
+	return nil
+}
+
+func (x *DaemonStatus) GetMemory() *MemoryUsage {
+	if x != nil {
+		return x.Memory
+	}
+	return nil
+}
+
+func (x *DaemonStatus) GetDisk() *DiskUsage {
+	if x != nil {
+		return x.Disk
+	}
+	return nil
+}
+
+// MemoryUsage is the memory charged to the daemon's cgroup v2 group.
+type MemoryUsage struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Everything charged to the group.
+	CurrentBytes int64 `protobuf:"varint,1,opt,name=current_bytes,json=currentBytes,proto3" json:"current_bytes,omitempty"`
+	// The group's memory.high and memory.max limits; zero means no limit.
+	HighBytes int64 `protobuf:"varint,2,opt,name=high_bytes,json=highBytes,proto3" json:"high_bytes,omitempty"`
+	MaxBytes  int64 `protobuf:"varint,3,opt,name=max_bytes,json=maxBytes,proto3" json:"max_bytes,omitempty"`
+	// Process memory such as the Go heap.
+	AnonBytes int64 `protobuf:"varint,4,opt,name=anon_bytes,json=anonBytes,proto3" json:"anon_bytes,omitempty"`
+	// Page cache.
+	FileBytes int64 `protobuf:"varint,5,opt,name=file_bytes,json=fileBytes,proto3" json:"file_bytes,omitempty"`
+	// Kernel memory, mostly the filesystem's inode and directory caches.
+	KernelBytes int64 `protobuf:"varint,6,opt,name=kernel_bytes,json=kernelBytes,proto3" json:"kernel_bytes,omitempty"`
+	// How often the group went over high_bytes and the kernel reclaimed
+	// memory from it.
+	HighEvents    int64 `protobuf:"varint,7,opt,name=high_events,json=highEvents,proto3" json:"high_events,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MemoryUsage) Reset() {
+	*x = MemoryUsage{}
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MemoryUsage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MemoryUsage) ProtoMessage() {}
+
+func (x *MemoryUsage) ProtoReflect() protoreflect.Message {
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MemoryUsage.ProtoReflect.Descriptor instead.
+func (*MemoryUsage) Descriptor() ([]byte, []int) {
+	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *MemoryUsage) GetCurrentBytes() int64 {
+	if x != nil {
+		return x.CurrentBytes
+	}
+	return 0
+}
+
+func (x *MemoryUsage) GetHighBytes() int64 {
+	if x != nil {
+		return x.HighBytes
+	}
+	return 0
+}
+
+func (x *MemoryUsage) GetMaxBytes() int64 {
+	if x != nil {
+		return x.MaxBytes
+	}
+	return 0
+}
+
+func (x *MemoryUsage) GetAnonBytes() int64 {
+	if x != nil {
+		return x.AnonBytes
+	}
+	return 0
+}
+
+func (x *MemoryUsage) GetFileBytes() int64 {
+	if x != nil {
+		return x.FileBytes
+	}
+	return 0
+}
+
+func (x *MemoryUsage) GetKernelBytes() int64 {
+	if x != nil {
+		return x.KernelBytes
+	}
+	return 0
+}
+
+func (x *MemoryUsage) GetHighEvents() int64 {
+	if x != nil {
+		return x.HighEvents
+	}
+	return 0
+}
+
+// DiskUsage is the size of a filesystem and the space left on it.
+type DiskUsage struct {
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Path       string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
+	TotalBytes int64                  `protobuf:"varint,2,opt,name=total_bytes,json=totalBytes,proto3" json:"total_bytes,omitempty"`
+	// Space an unprivileged user can still write.
+	FreeBytes     int64 `protobuf:"varint,3,opt,name=free_bytes,json=freeBytes,proto3" json:"free_bytes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DiskUsage) Reset() {
+	*x = DiskUsage{}
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DiskUsage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DiskUsage) ProtoMessage() {}
+
+func (x *DiskUsage) ProtoReflect() protoreflect.Message {
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DiskUsage.ProtoReflect.Descriptor instead.
+func (*DiskUsage) Descriptor() ([]byte, []int) {
+	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *DiskUsage) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *DiskUsage) GetTotalBytes() int64 {
+	if x != nil {
+		return x.TotalBytes
+	}
+	return 0
+}
+
+func (x *DiskUsage) GetFreeBytes() int64 {
+	if x != nil {
+		return x.FreeBytes
+	}
+	return 0
+}
+
+type ListRunsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Most runs to return; zero returns 20.
+	Limit         int32 `protobuf:"varint,1,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListRunsRequest) Reset() {
+	*x = ListRunsRequest{}
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListRunsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListRunsRequest) ProtoMessage() {}
+
+func (x *ListRunsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListRunsRequest.ProtoReflect.Descriptor instead.
+func (*ListRunsRequest) Descriptor() ([]byte, []int) {
+	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *ListRunsRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+type ListRunsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Runs          []*Run                 `protobuf:"bytes,1,rep,name=runs,proto3" json:"runs,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListRunsResponse) Reset() {
+	*x = ListRunsResponse{}
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListRunsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListRunsResponse) ProtoMessage() {}
+
+func (x *ListRunsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListRunsResponse.ProtoReflect.Descriptor instead.
+func (*ListRunsResponse) Descriptor() ([]byte, []int) {
+	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *ListRunsResponse) GetRuns() []*Run {
+	if x != nil {
+		return x.Runs
+	}
+	return nil
+}
+
+// Run is one deduplication run.
+type Run struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Id        string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	StartTime *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=start_time,json=startTime,proto3" json:"start_time,omitempty"`
+	// Unset while running or if interrupted.
+	EndTime *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=end_time,json=endTime,proto3" json:"end_time,omitempty"`
+	Outcome RunOutcome             `protobuf:"varint,4,opt,name=outcome,proto3,enum=bazelmop.v1.RunOutcome" json:"outcome,omitempty"`
+	// Why the run failed.
+	Error        string `protobuf:"bytes,5,opt,name=error,proto3" json:"error,omitempty"`
+	FilesScanned int64  `protobuf:"varint,6,opt,name=files_scanned,json=filesScanned,proto3" json:"files_scanned,omitempty"`
+	FilesHashed  int64  `protobuf:"varint,7,opt,name=files_hashed,json=filesHashed,proto3" json:"files_hashed,omitempty"`
+	LinksCreated int64  `protobuf:"varint,8,opt,name=links_created,json=linksCreated,proto3" json:"links_created,omitempty"`
+	LinksFailed  int64  `protobuf:"varint,9,opt,name=links_failed,json=linksFailed,proto3" json:"links_failed,omitempty"`
+	// Total size of every scanned file, counted once per path.
+	ApparentBytes int64 `protobuf:"varint,10,opt,name=apparent_bytes,json=apparentBytes,proto3" json:"apparent_bytes,omitempty"`
+	// How much of apparent_bytes was already stored once, because paths
+	// shared an inode or extents, when the run started.
+	SharedBytes int64 `protobuf:"varint,11,opt,name=shared_bytes,json=sharedBytes,proto3" json:"shared_bytes,omitempty"`
+	// Size of the duplicates the run found.
+	ReclaimableBytes int64 `protobuf:"varint,12,opt,name=reclaimable_bytes,json=reclaimableBytes,proto3" json:"reclaimable_bytes,omitempty"`
+	// Highest memory charged to the daemon's cgroup during the run.
+	PeakMemoryBytes int64 `protobuf:"varint,13,opt,name=peak_memory_bytes,json=peakMemoryBytes,proto3" json:"peak_memory_bytes,omitempty"`
+	// Free space on the cache filesystem when the run ended.
+	DiskFreeBytes int64 `protobuf:"varint,14,opt,name=disk_free_bytes,json=diskFreeBytes,proto3" json:"disk_free_bytes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Run) Reset() {
+	*x = Run{}
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Run) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Run) ProtoMessage() {}
+
+func (x *Run) ProtoReflect() protoreflect.Message {
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Run.ProtoReflect.Descriptor instead.
+func (*Run) Descriptor() ([]byte, []int) {
+	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *Run) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *Run) GetStartTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.StartTime
+	}
+	return nil
+}
+
+func (x *Run) GetEndTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.EndTime
+	}
+	return nil
+}
+
+func (x *Run) GetOutcome() RunOutcome {
+	if x != nil {
+		return x.Outcome
+	}
+	return RunOutcome_RUN_OUTCOME_UNSPECIFIED
+}
+
+func (x *Run) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *Run) GetFilesScanned() int64 {
+	if x != nil {
+		return x.FilesScanned
+	}
+	return 0
+}
+
+func (x *Run) GetFilesHashed() int64 {
+	if x != nil {
+		return x.FilesHashed
+	}
+	return 0
+}
+
+func (x *Run) GetLinksCreated() int64 {
+	if x != nil {
+		return x.LinksCreated
+	}
+	return 0
+}
+
+func (x *Run) GetLinksFailed() int64 {
+	if x != nil {
+		return x.LinksFailed
+	}
+	return 0
+}
+
+func (x *Run) GetApparentBytes() int64 {
+	if x != nil {
+		return x.ApparentBytes
+	}
+	return 0
+}
+
+func (x *Run) GetSharedBytes() int64 {
+	if x != nil {
+		return x.SharedBytes
+	}
+	return 0
+}
+
+func (x *Run) GetReclaimableBytes() int64 {
+	if x != nil {
+		return x.ReclaimableBytes
+	}
+	return 0
+}
+
+func (x *Run) GetPeakMemoryBytes() int64 {
+	if x != nil {
+		return x.PeakMemoryBytes
+	}
+	return 0
+}
+
+func (x *Run) GetDiskFreeBytes() int64 {
+	if x != nil {
+		return x.DiskFreeBytes
+	}
+	return 0
+}
+
 type GetStatusRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -166,7 +757,7 @@ type GetStatusRequest struct {
 
 func (x *GetStatusRequest) Reset() {
 	*x = GetStatusRequest{}
-	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[1]
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -178,7 +769,7 @@ func (x *GetStatusRequest) String() string {
 func (*GetStatusRequest) ProtoMessage() {}
 
 func (x *GetStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[1]
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -191,7 +782,7 @@ func (x *GetStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetStatusRequest) Descriptor() ([]byte, []int) {
-	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{1}
+	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{6}
 }
 
 type GetStatusResponse struct {
@@ -203,7 +794,7 @@ type GetStatusResponse struct {
 
 func (x *GetStatusResponse) Reset() {
 	*x = GetStatusResponse{}
-	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[2]
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -215,7 +806,7 @@ func (x *GetStatusResponse) String() string {
 func (*GetStatusResponse) ProtoMessage() {}
 
 func (x *GetStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[2]
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -228,7 +819,7 @@ func (x *GetStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetStatusResponse) Descriptor() ([]byte, []int) {
-	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{2}
+	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *GetStatusResponse) GetStatus() *DaemonStatus {
@@ -246,7 +837,7 @@ type WatchStatusRequest struct {
 
 func (x *WatchStatusRequest) Reset() {
 	*x = WatchStatusRequest{}
-	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[3]
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -258,7 +849,7 @@ func (x *WatchStatusRequest) String() string {
 func (*WatchStatusRequest) ProtoMessage() {}
 
 func (x *WatchStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[3]
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -271,7 +862,7 @@ func (x *WatchStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchStatusRequest.ProtoReflect.Descriptor instead.
 func (*WatchStatusRequest) Descriptor() ([]byte, []int) {
-	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{3}
+	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{8}
 }
 
 type WatchStatusResponse struct {
@@ -283,7 +874,7 @@ type WatchStatusResponse struct {
 
 func (x *WatchStatusResponse) Reset() {
 	*x = WatchStatusResponse{}
-	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[4]
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -295,7 +886,7 @@ func (x *WatchStatusResponse) String() string {
 func (*WatchStatusResponse) ProtoMessage() {}
 
 func (x *WatchStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[4]
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -308,7 +899,7 @@ func (x *WatchStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchStatusResponse.ProtoReflect.Descriptor instead.
 func (*WatchStatusResponse) Descriptor() ([]byte, []int) {
-	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{4}
+	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *WatchStatusResponse) GetStatus() *DaemonStatus {
@@ -348,7 +939,7 @@ type OutputBase struct {
 
 func (x *OutputBase) Reset() {
 	*x = OutputBase{}
-	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[5]
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -360,7 +951,7 @@ func (x *OutputBase) String() string {
 func (*OutputBase) ProtoMessage() {}
 
 func (x *OutputBase) ProtoReflect() protoreflect.Message {
-	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[5]
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -373,7 +964,7 @@ func (x *OutputBase) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OutputBase.ProtoReflect.Descriptor instead.
 func (*OutputBase) Descriptor() ([]byte, []int) {
-	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{5}
+	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *OutputBase) GetId() string {
@@ -454,7 +1045,7 @@ type ListOutputBasesRequest struct {
 
 func (x *ListOutputBasesRequest) Reset() {
 	*x = ListOutputBasesRequest{}
-	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[6]
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -466,7 +1057,7 @@ func (x *ListOutputBasesRequest) String() string {
 func (*ListOutputBasesRequest) ProtoMessage() {}
 
 func (x *ListOutputBasesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[6]
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -479,7 +1070,7 @@ func (x *ListOutputBasesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListOutputBasesRequest.ProtoReflect.Descriptor instead.
 func (*ListOutputBasesRequest) Descriptor() ([]byte, []int) {
-	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{6}
+	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{11}
 }
 
 type ListOutputBasesResponse struct {
@@ -491,7 +1082,7 @@ type ListOutputBasesResponse struct {
 
 func (x *ListOutputBasesResponse) Reset() {
 	*x = ListOutputBasesResponse{}
-	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[7]
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -503,7 +1094,7 @@ func (x *ListOutputBasesResponse) String() string {
 func (*ListOutputBasesResponse) ProtoMessage() {}
 
 func (x *ListOutputBasesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[7]
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -516,7 +1107,7 @@ func (x *ListOutputBasesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListOutputBasesResponse.ProtoReflect.Descriptor instead.
 func (*ListOutputBasesResponse) Descriptor() ([]byte, []int) {
-	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{7}
+	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ListOutputBasesResponse) GetOutputBases() []*OutputBase {
@@ -536,7 +1127,7 @@ type DeleteOutputBasesRequest struct {
 
 func (x *DeleteOutputBasesRequest) Reset() {
 	*x = DeleteOutputBasesRequest{}
-	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[8]
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -548,7 +1139,7 @@ func (x *DeleteOutputBasesRequest) String() string {
 func (*DeleteOutputBasesRequest) ProtoMessage() {}
 
 func (x *DeleteOutputBasesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[8]
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -561,7 +1152,7 @@ func (x *DeleteOutputBasesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteOutputBasesRequest.ProtoReflect.Descriptor instead.
 func (*DeleteOutputBasesRequest) Descriptor() ([]byte, []int) {
-	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{8}
+	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *DeleteOutputBasesRequest) GetIds() []string {
@@ -581,7 +1172,7 @@ type DeleteOutputBasesResponse struct {
 
 func (x *DeleteOutputBasesResponse) Reset() {
 	*x = DeleteOutputBasesResponse{}
-	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[9]
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -593,7 +1184,7 @@ func (x *DeleteOutputBasesResponse) String() string {
 func (*DeleteOutputBasesResponse) ProtoMessage() {}
 
 func (x *DeleteOutputBasesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[9]
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -606,7 +1197,7 @@ func (x *DeleteOutputBasesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteOutputBasesResponse.ProtoReflect.Descriptor instead.
 func (*DeleteOutputBasesResponse) Descriptor() ([]byte, []int) {
-	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{9}
+	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *DeleteOutputBasesResponse) GetDeletedIds() []string {
@@ -634,7 +1225,7 @@ type DeleteFailure struct {
 
 func (x *DeleteFailure) Reset() {
 	*x = DeleteFailure{}
-	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[10]
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -646,7 +1237,7 @@ func (x *DeleteFailure) String() string {
 func (*DeleteFailure) ProtoMessage() {}
 
 func (x *DeleteFailure) ProtoReflect() protoreflect.Message {
-	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[10]
+	mi := &file_bazelmop_v1_bazelmop_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -659,7 +1250,7 @@ func (x *DeleteFailure) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteFailure.ProtoReflect.Descriptor instead.
 func (*DeleteFailure) Descriptor() ([]byte, []int) {
-	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{10}
+	return file_bazelmop_v1_bazelmop_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *DeleteFailure) GetId() string {
@@ -680,14 +1271,63 @@ var File_bazelmop_v1_bazelmop_proto protoreflect.FileDescriptor
 
 const file_bazelmop_v1_bazelmop_proto_rawDesc = "" +
 	"\n" +
-	"\x1abazelmop/v1/bazelmop.proto\x12\vbazelmop.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa5\x02\n" +
+	"\x1abazelmop/v1/bazelmop.proto\x12\vbazelmop.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf8\x04\n" +
 	"\fDaemonStatus\x12\x1a\n" +
 	"\bactivity\x18\x01 \x01(\tR\bactivity\x12;\n" +
 	"\vreport_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"reportTime\x12>\n" +
 	"\rnext_run_time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\vnextRunTime\x12'\n" +
 	"\x0freport_markdown\x18\x04 \x01(\tR\x0ereportMarkdown\x12S\n" +
-	"\x18output_bases_update_time\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\x15outputBasesUpdateTime\"\x12\n" +
+	"\x18output_bases_update_time\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\x15outputBasesUpdateTime\x12+\n" +
+	"\x05phase\x18\x06 \x01(\x0e2\x15.bazelmop.v1.RunPhaseR\x05phase\x12\x1d\n" +
+	"\n" +
+	"phase_done\x18\a \x01(\x03R\tphaseDone\x12\x1f\n" +
+	"\vphase_total\x18\b \x01(\x03R\n" +
+	"phaseTotal\x12@\n" +
+	"\x0erun_start_time\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\frunStartTime\x12D\n" +
+	"\x10phase_start_time\x18\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\x0ephaseStartTime\x120\n" +
+	"\x06memory\x18\v \x01(\v2\x18.bazelmop.v1.MemoryUsageR\x06memory\x12*\n" +
+	"\x04disk\x18\f \x01(\v2\x16.bazelmop.v1.DiskUsageR\x04disk\"\xf0\x01\n" +
+	"\vMemoryUsage\x12#\n" +
+	"\rcurrent_bytes\x18\x01 \x01(\x03R\fcurrentBytes\x12\x1d\n" +
+	"\n" +
+	"high_bytes\x18\x02 \x01(\x03R\thighBytes\x12\x1b\n" +
+	"\tmax_bytes\x18\x03 \x01(\x03R\bmaxBytes\x12\x1d\n" +
+	"\n" +
+	"anon_bytes\x18\x04 \x01(\x03R\tanonBytes\x12\x1d\n" +
+	"\n" +
+	"file_bytes\x18\x05 \x01(\x03R\tfileBytes\x12!\n" +
+	"\fkernel_bytes\x18\x06 \x01(\x03R\vkernelBytes\x12\x1f\n" +
+	"\vhigh_events\x18\a \x01(\x03R\n" +
+	"highEvents\"_\n" +
+	"\tDiskUsage\x12\x12\n" +
+	"\x04path\x18\x01 \x01(\tR\x04path\x12\x1f\n" +
+	"\vtotal_bytes\x18\x02 \x01(\x03R\n" +
+	"totalBytes\x12\x1d\n" +
+	"\n" +
+	"free_bytes\x18\x03 \x01(\x03R\tfreeBytes\"'\n" +
+	"\x0fListRunsRequest\x12\x14\n" +
+	"\x05limit\x18\x01 \x01(\x05R\x05limit\"8\n" +
+	"\x10ListRunsResponse\x12$\n" +
+	"\x04runs\x18\x01 \x03(\v2\x10.bazelmop.v1.RunR\x04runs\"\xab\x04\n" +
+	"\x03Run\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x129\n" +
+	"\n" +
+	"start_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\tstartTime\x125\n" +
+	"\bend_time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\aendTime\x121\n" +
+	"\aoutcome\x18\x04 \x01(\x0e2\x17.bazelmop.v1.RunOutcomeR\aoutcome\x12\x14\n" +
+	"\x05error\x18\x05 \x01(\tR\x05error\x12#\n" +
+	"\rfiles_scanned\x18\x06 \x01(\x03R\ffilesScanned\x12!\n" +
+	"\ffiles_hashed\x18\a \x01(\x03R\vfilesHashed\x12#\n" +
+	"\rlinks_created\x18\b \x01(\x03R\flinksCreated\x12!\n" +
+	"\flinks_failed\x18\t \x01(\x03R\vlinksFailed\x12%\n" +
+	"\x0eapparent_bytes\x18\n" +
+	" \x01(\x03R\rapparentBytes\x12!\n" +
+	"\fshared_bytes\x18\v \x01(\x03R\vsharedBytes\x12+\n" +
+	"\x11reclaimable_bytes\x18\f \x01(\x03R\x10reclaimableBytes\x12*\n" +
+	"\x11peak_memory_bytes\x18\r \x01(\x03R\x0fpeakMemoryBytes\x12&\n" +
+	"\x0fdisk_free_bytes\x18\x0e \x01(\x03R\rdiskFreeBytes\"\x12\n" +
 	"\x10GetStatusRequest\"F\n" +
 	"\x11GetStatusResponse\x121\n" +
 	"\x06status\x18\x01 \x01(\v2\x19.bazelmop.v1.DaemonStatusR\x06status\"\x14\n" +
@@ -720,15 +1360,30 @@ const file_bazelmop_v1_bazelmop_proto_rawDesc = "" +
 	"\bfailures\x18\x02 \x03(\v2\x1a.bazelmop.v1.DeleteFailureR\bfailures\"9\n" +
 	"\rDeleteFailure\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage*{\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage*\x91\x01\n" +
+	"\bRunPhase\x12\x19\n" +
+	"\x15RUN_PHASE_UNSPECIFIED\x10\x00\x12\x12\n" +
+	"\x0eRUN_PHASE_IDLE\x10\x01\x12\x12\n" +
+	"\x0eRUN_PHASE_SCAN\x10\x02\x12\x1a\n" +
+	"\x16RUN_PHASE_READ_EXTENTS\x10\x03\x12\x12\n" +
+	"\x0eRUN_PHASE_HASH\x10\x04\x12\x12\n" +
+	"\x0eRUN_PHASE_LINK\x10\x05*\x92\x01\n" +
+	"\n" +
+	"RunOutcome\x12\x1b\n" +
+	"\x17RUN_OUTCOME_UNSPECIFIED\x10\x00\x12\x17\n" +
+	"\x13RUN_OUTCOME_RUNNING\x10\x01\x12\x19\n" +
+	"\x15RUN_OUTCOME_COMPLETED\x10\x02\x12\x16\n" +
+	"\x12RUN_OUTCOME_FAILED\x10\x03\x12\x1b\n" +
+	"\x17RUN_OUTCOME_INTERRUPTED\x10\x04*{\n" +
 	"\x0eOutputBaseKind\x12 \n" +
 	"\x1cOUTPUT_BASE_KIND_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cOUTPUT_BASE_KIND_OUTPUT_BASE\x10\x01\x12%\n" +
-	"!OUTPUT_BASE_KIND_REPOSITORY_CACHE\x10\x022\xfd\x02\n" +
+	"!OUTPUT_BASE_KIND_REPOSITORY_CACHE\x10\x022\xcb\x03\n" +
 	"\x0fBazelmopService\x12O\n" +
 	"\tGetStatus\x12\x1d.bazelmop.v1.GetStatusRequest\x1a\x1e.bazelmop.v1.GetStatusResponse\"\x03\x90\x02\x01\x12R\n" +
 	"\vWatchStatus\x12\x1f.bazelmop.v1.WatchStatusRequest\x1a .bazelmop.v1.WatchStatusResponse0\x01\x12a\n" +
-	"\x0fListOutputBases\x12#.bazelmop.v1.ListOutputBasesRequest\x1a$.bazelmop.v1.ListOutputBasesResponse\"\x03\x90\x02\x01\x12b\n" +
+	"\x0fListOutputBases\x12#.bazelmop.v1.ListOutputBasesRequest\x1a$.bazelmop.v1.ListOutputBasesResponse\"\x03\x90\x02\x01\x12L\n" +
+	"\bListRuns\x12\x1c.bazelmop.v1.ListRunsRequest\x1a\x1d.bazelmop.v1.ListRunsResponse\"\x03\x90\x02\x01\x12b\n" +
 	"\x11DeleteOutputBases\x12%.bazelmop.v1.DeleteOutputBasesRequest\x1a&.bazelmop.v1.DeleteOutputBasesResponseBAZ?github.com/meta-programming/bazelmop/gen/bazelmop/v1;bazelmopv1b\x06proto3"
 
 var (
@@ -743,48 +1398,66 @@ func file_bazelmop_v1_bazelmop_proto_rawDescGZIP() []byte {
 	return file_bazelmop_v1_bazelmop_proto_rawDescData
 }
 
-var file_bazelmop_v1_bazelmop_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_bazelmop_v1_bazelmop_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_bazelmop_v1_bazelmop_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_bazelmop_v1_bazelmop_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_bazelmop_v1_bazelmop_proto_goTypes = []any{
-	(OutputBaseKind)(0),               // 0: bazelmop.v1.OutputBaseKind
-	(*DaemonStatus)(nil),              // 1: bazelmop.v1.DaemonStatus
-	(*GetStatusRequest)(nil),          // 2: bazelmop.v1.GetStatusRequest
-	(*GetStatusResponse)(nil),         // 3: bazelmop.v1.GetStatusResponse
-	(*WatchStatusRequest)(nil),        // 4: bazelmop.v1.WatchStatusRequest
-	(*WatchStatusResponse)(nil),       // 5: bazelmop.v1.WatchStatusResponse
-	(*OutputBase)(nil),                // 6: bazelmop.v1.OutputBase
-	(*ListOutputBasesRequest)(nil),    // 7: bazelmop.v1.ListOutputBasesRequest
-	(*ListOutputBasesResponse)(nil),   // 8: bazelmop.v1.ListOutputBasesResponse
-	(*DeleteOutputBasesRequest)(nil),  // 9: bazelmop.v1.DeleteOutputBasesRequest
-	(*DeleteOutputBasesResponse)(nil), // 10: bazelmop.v1.DeleteOutputBasesResponse
-	(*DeleteFailure)(nil),             // 11: bazelmop.v1.DeleteFailure
-	(*timestamppb.Timestamp)(nil),     // 12: google.protobuf.Timestamp
+	(RunPhase)(0),                     // 0: bazelmop.v1.RunPhase
+	(RunOutcome)(0),                   // 1: bazelmop.v1.RunOutcome
+	(OutputBaseKind)(0),               // 2: bazelmop.v1.OutputBaseKind
+	(*DaemonStatus)(nil),              // 3: bazelmop.v1.DaemonStatus
+	(*MemoryUsage)(nil),               // 4: bazelmop.v1.MemoryUsage
+	(*DiskUsage)(nil),                 // 5: bazelmop.v1.DiskUsage
+	(*ListRunsRequest)(nil),           // 6: bazelmop.v1.ListRunsRequest
+	(*ListRunsResponse)(nil),          // 7: bazelmop.v1.ListRunsResponse
+	(*Run)(nil),                       // 8: bazelmop.v1.Run
+	(*GetStatusRequest)(nil),          // 9: bazelmop.v1.GetStatusRequest
+	(*GetStatusResponse)(nil),         // 10: bazelmop.v1.GetStatusResponse
+	(*WatchStatusRequest)(nil),        // 11: bazelmop.v1.WatchStatusRequest
+	(*WatchStatusResponse)(nil),       // 12: bazelmop.v1.WatchStatusResponse
+	(*OutputBase)(nil),                // 13: bazelmop.v1.OutputBase
+	(*ListOutputBasesRequest)(nil),    // 14: bazelmop.v1.ListOutputBasesRequest
+	(*ListOutputBasesResponse)(nil),   // 15: bazelmop.v1.ListOutputBasesResponse
+	(*DeleteOutputBasesRequest)(nil),  // 16: bazelmop.v1.DeleteOutputBasesRequest
+	(*DeleteOutputBasesResponse)(nil), // 17: bazelmop.v1.DeleteOutputBasesResponse
+	(*DeleteFailure)(nil),             // 18: bazelmop.v1.DeleteFailure
+	(*timestamppb.Timestamp)(nil),     // 19: google.protobuf.Timestamp
 }
 var file_bazelmop_v1_bazelmop_proto_depIdxs = []int32{
-	12, // 0: bazelmop.v1.DaemonStatus.report_time:type_name -> google.protobuf.Timestamp
-	12, // 1: bazelmop.v1.DaemonStatus.next_run_time:type_name -> google.protobuf.Timestamp
-	12, // 2: bazelmop.v1.DaemonStatus.output_bases_update_time:type_name -> google.protobuf.Timestamp
-	1,  // 3: bazelmop.v1.GetStatusResponse.status:type_name -> bazelmop.v1.DaemonStatus
-	1,  // 4: bazelmop.v1.WatchStatusResponse.status:type_name -> bazelmop.v1.DaemonStatus
-	0,  // 5: bazelmop.v1.OutputBase.kind:type_name -> bazelmop.v1.OutputBaseKind
-	12, // 6: bazelmop.v1.OutputBase.last_modified_time:type_name -> google.protobuf.Timestamp
-	12, // 7: bazelmop.v1.OutputBase.last_build_time:type_name -> google.protobuf.Timestamp
-	12, // 8: bazelmop.v1.OutputBase.last_test_time:type_name -> google.protobuf.Timestamp
-	6,  // 9: bazelmop.v1.ListOutputBasesResponse.output_bases:type_name -> bazelmop.v1.OutputBase
-	11, // 10: bazelmop.v1.DeleteOutputBasesResponse.failures:type_name -> bazelmop.v1.DeleteFailure
-	2,  // 11: bazelmop.v1.BazelmopService.GetStatus:input_type -> bazelmop.v1.GetStatusRequest
-	4,  // 12: bazelmop.v1.BazelmopService.WatchStatus:input_type -> bazelmop.v1.WatchStatusRequest
-	7,  // 13: bazelmop.v1.BazelmopService.ListOutputBases:input_type -> bazelmop.v1.ListOutputBasesRequest
-	9,  // 14: bazelmop.v1.BazelmopService.DeleteOutputBases:input_type -> bazelmop.v1.DeleteOutputBasesRequest
-	3,  // 15: bazelmop.v1.BazelmopService.GetStatus:output_type -> bazelmop.v1.GetStatusResponse
-	5,  // 16: bazelmop.v1.BazelmopService.WatchStatus:output_type -> bazelmop.v1.WatchStatusResponse
-	8,  // 17: bazelmop.v1.BazelmopService.ListOutputBases:output_type -> bazelmop.v1.ListOutputBasesResponse
-	10, // 18: bazelmop.v1.BazelmopService.DeleteOutputBases:output_type -> bazelmop.v1.DeleteOutputBasesResponse
-	15, // [15:19] is the sub-list for method output_type
-	11, // [11:15] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	19, // 0: bazelmop.v1.DaemonStatus.report_time:type_name -> google.protobuf.Timestamp
+	19, // 1: bazelmop.v1.DaemonStatus.next_run_time:type_name -> google.protobuf.Timestamp
+	19, // 2: bazelmop.v1.DaemonStatus.output_bases_update_time:type_name -> google.protobuf.Timestamp
+	0,  // 3: bazelmop.v1.DaemonStatus.phase:type_name -> bazelmop.v1.RunPhase
+	19, // 4: bazelmop.v1.DaemonStatus.run_start_time:type_name -> google.protobuf.Timestamp
+	19, // 5: bazelmop.v1.DaemonStatus.phase_start_time:type_name -> google.protobuf.Timestamp
+	4,  // 6: bazelmop.v1.DaemonStatus.memory:type_name -> bazelmop.v1.MemoryUsage
+	5,  // 7: bazelmop.v1.DaemonStatus.disk:type_name -> bazelmop.v1.DiskUsage
+	8,  // 8: bazelmop.v1.ListRunsResponse.runs:type_name -> bazelmop.v1.Run
+	19, // 9: bazelmop.v1.Run.start_time:type_name -> google.protobuf.Timestamp
+	19, // 10: bazelmop.v1.Run.end_time:type_name -> google.protobuf.Timestamp
+	1,  // 11: bazelmop.v1.Run.outcome:type_name -> bazelmop.v1.RunOutcome
+	3,  // 12: bazelmop.v1.GetStatusResponse.status:type_name -> bazelmop.v1.DaemonStatus
+	3,  // 13: bazelmop.v1.WatchStatusResponse.status:type_name -> bazelmop.v1.DaemonStatus
+	2,  // 14: bazelmop.v1.OutputBase.kind:type_name -> bazelmop.v1.OutputBaseKind
+	19, // 15: bazelmop.v1.OutputBase.last_modified_time:type_name -> google.protobuf.Timestamp
+	19, // 16: bazelmop.v1.OutputBase.last_build_time:type_name -> google.protobuf.Timestamp
+	19, // 17: bazelmop.v1.OutputBase.last_test_time:type_name -> google.protobuf.Timestamp
+	13, // 18: bazelmop.v1.ListOutputBasesResponse.output_bases:type_name -> bazelmop.v1.OutputBase
+	18, // 19: bazelmop.v1.DeleteOutputBasesResponse.failures:type_name -> bazelmop.v1.DeleteFailure
+	9,  // 20: bazelmop.v1.BazelmopService.GetStatus:input_type -> bazelmop.v1.GetStatusRequest
+	11, // 21: bazelmop.v1.BazelmopService.WatchStatus:input_type -> bazelmop.v1.WatchStatusRequest
+	14, // 22: bazelmop.v1.BazelmopService.ListOutputBases:input_type -> bazelmop.v1.ListOutputBasesRequest
+	6,  // 23: bazelmop.v1.BazelmopService.ListRuns:input_type -> bazelmop.v1.ListRunsRequest
+	16, // 24: bazelmop.v1.BazelmopService.DeleteOutputBases:input_type -> bazelmop.v1.DeleteOutputBasesRequest
+	10, // 25: bazelmop.v1.BazelmopService.GetStatus:output_type -> bazelmop.v1.GetStatusResponse
+	12, // 26: bazelmop.v1.BazelmopService.WatchStatus:output_type -> bazelmop.v1.WatchStatusResponse
+	15, // 27: bazelmop.v1.BazelmopService.ListOutputBases:output_type -> bazelmop.v1.ListOutputBasesResponse
+	7,  // 28: bazelmop.v1.BazelmopService.ListRuns:output_type -> bazelmop.v1.ListRunsResponse
+	17, // 29: bazelmop.v1.BazelmopService.DeleteOutputBases:output_type -> bazelmop.v1.DeleteOutputBasesResponse
+	25, // [25:30] is the sub-list for method output_type
+	20, // [20:25] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_bazelmop_v1_bazelmop_proto_init() }
@@ -797,8 +1470,8 @@ func file_bazelmop_v1_bazelmop_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bazelmop_v1_bazelmop_proto_rawDesc), len(file_bazelmop_v1_bazelmop_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   11,
+			NumEnums:      3,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

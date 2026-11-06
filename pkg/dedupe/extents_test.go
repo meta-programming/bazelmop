@@ -93,3 +93,22 @@ func TestExtentFingerprintRecognisesClone(t *testing.T) {
 		t.Errorf("an independent copy has the original's fingerprint %x", fpOrig)
 	}
 }
+
+func TestSharedBytes(t *testing.T) {
+	x := [extentFingerprintSize]byte{9}
+	entries := []FileEntry{
+		// Three paths to two hard-linked inodes plus one clone of them: one
+		// file stored once, so 2 × 10 bytes are shared.
+		{Size: 10, Dev: 1, Inode: 1, Extents: x},
+		{Size: 10, Dev: 1, Inode: 1, Extents: x},
+		{Size: 10, Dev: 1, Inode: 2, Extents: x},
+		// A separate copy shares nothing.
+		{Size: 10, Dev: 1, Inode: 3},
+		// A file of unique size.
+		{Size: 7, Dev: 1, Inode: 4},
+	}
+	apparent, shared := sharedBytes(entries, groupBySize(entries))
+	if apparent != 47 || shared != 20 {
+		t.Errorf("sharedBytes = %d, %d; want 47, 20", apparent, shared)
+	}
+}

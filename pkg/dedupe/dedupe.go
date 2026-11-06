@@ -45,19 +45,25 @@ type Config struct {
 	Verbose       bool
 	ScanExternal  bool // Whether to scan and deduplicate external/ (extracted third-party repos)
 	ScanBazelOut  bool // Whether to scan and deduplicate bazel-out/ (locally built targets)
-	OnProgress    func(status string) // Callback for real-time progress updates
+	OnProgress    func(Progress)      // Called as the run moves through its phases
 }
 
 // Deduplicator manages the walking, matching, and linking process.
 type Deduplicator struct {
 	config Config
 	casMap map[uint64][sha256.Size]byte // Inode -> SHA-256 hash resolved from repository cache
+	stats  Stats
 }
 
-func (d *Deduplicator) updateProgress(status string) {
+func (d *Deduplicator) updateProgress(p Progress) {
 	if d.config.OnProgress != nil {
-		d.config.OnProgress(status)
+		d.config.OnProgress(p)
 	}
+}
+
+// Stats returns what the latest Scan and Deduplicate found and did.
+func (d *Deduplicator) Stats() Stats {
+	return d.stats
 }
 
 // NewDeduplicator instantiates a new deduplicator runner.
@@ -70,7 +76,7 @@ func NewDeduplicator(cfg Config) *Deduplicator {
 
 // Scan walks the workspaces and builds the list of file entries using pkg/bazelfiles.
 func (d *Deduplicator) Scan(ctx context.Context, root string) ([]FileEntry, error) {
-	d.updateProgress("Scanning directories...")
+	d.updateProgress(Progress{Phase: PhaseScan, Message: "Scanning directories..."})
 	discovered, err := bazelfiles.Walk(ctx, bazelcas.RootCASPath(root),
 		bazelfiles.WithScanExternal(d.config.ScanExternal),
 		bazelfiles.WithScanBazelOut(d.config.ScanBazelOut),
@@ -305,6 +311,22 @@ func runHash(entries []FileEntry, run []int) [sha256.Size]byte {
 	return [sha256.Size]byte{}
 }
 
+// sharedBytes returns the total size of entries counted once per path, and
+// how much of it is stored only once because paths share a file (see
+// [sameFile]). Call it after extents are read.
+func sharedBytes(entries []FileEntry, sizeGroups map[SizeDev][]int) (apparent, shared int64) {
+	for key, indices := range sizeGroups {
+		apparent += key.Size * int64(len(indices))
+		if len(indices) < 2 || key.Size == 0 {
+			continue
+		}
+		eachFileRun(entries, indices, func(run []int) {
+			shared += key.Size * int64(len(run)-1)
+		})
+	}
+	return apparent, shared
+}
+
 // readExtents fills in [FileEntry.Extents] for every non-empty file in a
 // size group with at least two inodes. It reads one path per inode and copies
 // the result to the inode's other paths.
@@ -323,7 +345,7 @@ func (d *Deduplicator) readExtents(ctx context.Context, entries []FileEntry, siz
 	}
 
 	fmt.Printf("Reading extent maps for %d inodes...\n", len(runs))
-	d.updateProgress(fmt.Sprintf("Reading extent maps: %d inodes...", len(runs)))
+	d.updateProgress(Progress{Phase: PhaseReadExtents, Total: int64(len(runs)), Message: fmt.Sprintf("Reading extent maps: %d inodes...", len(runs))})
 
 	jobs := make(chan []int, 64)
 	go func() {
@@ -378,12 +400,16 @@ func (d *Deduplicator) Deduplicate(ctx context.Context, entries []FileEntry) (st
 		return "", err
 	}
 
+	d.stats.FilesScanned = int64(len(entries))
+	d.stats.ApparentBytes, d.stats.SharedBytes = sharedBytes(entries, sizeGroups)
+
 	// 3. Pick one path per file to hash, in groups that hold more than one file
 	indicesToHash := selectHashCandidates(entries, sizeGroups)
 
 	fmt.Printf("Calculating SHA-256 hashes for %d files (skipping %d paths that are unique-sized, empty, already hashed or share their bytes on disk)...\n",
 		len(indicesToHash), len(entries)-len(indicesToHash))
-	d.updateProgress(fmt.Sprintf("Hashing files: %d Group Candidates...", len(indicesToHash)))
+	d.stats.FilesHashed = int64(len(indicesToHash))
+	d.updateProgress(Progress{Phase: PhaseHash, Total: int64(len(indicesToHash)), Message: fmt.Sprintf("Hashing files: %d Group Candidates...", len(indicesToHash))})
 
 	if len(indicesToHash) == 0 {
 		shareFileHashes(entries, sizeGroups)
@@ -444,7 +470,7 @@ func (d *Deduplicator) Deduplicate(ctx context.Context, entries []FileEntry) (st
 					lastLogTime = time.Now()
 					percent := float64(currentHashed) * 100.0 / float64(len(indicesToHash))
 					fmt.Printf("Progress: Hashed %d/%d files (%.1f%%)...\n", currentHashed, len(indicesToHash), percent)
-					d.updateProgress(fmt.Sprintf("Hashing files: %d/%d (%.1f%%)...", currentHashed, len(indicesToHash), percent))
+					d.updateProgress(Progress{Phase: PhaseHash, Done: int64(currentHashed), Total: int64(len(indicesToHash)), Message: fmt.Sprintf("Hashing files: %d/%d (%.1f%%)...", currentHashed, len(indicesToHash), percent)})
 				}
 				logMutex.Unlock()
 			}
@@ -524,26 +550,36 @@ func (d *Deduplicator) processMatches(ctx context.Context, entries []FileEntry) 
 		}
 	}
 
+	for _, match := range matchesToLink {
+		d.stats.ReclaimableBytes += int64(len(match.Duplicates)) * match.Representative.Size
+	}
+
 	// Generate report
 	report := d.generateMarkdownReport(entries, matchesToLink)
 	fmt.Println(report)
 
 	if d.config.DryRun {
 		fmt.Println("\n[Dry Run] No files were modified.")
-		d.updateProgress("Idle")
+		d.updateProgress(Progress{Phase: PhaseIdle, Message: "Idle"})
 		return report, nil
 	}
 
 	// Execute linking
-	d.updateProgress("Performing deduplication linking...")
+	var linkTotal int64
+	for _, match := range matchesToLink {
+		linkTotal += int64(len(match.Duplicates))
+	}
+	d.updateProgress(Progress{Phase: PhaseLink, Total: linkTotal, Message: "Performing deduplication linking..."})
 	fmt.Printf("\nPerforming deduplication linking for %d groups...\n", len(matchesToLink))
 	var successCount, failCount int64
+	lastLinkProgress := time.Now()
 	for _, match := range matchesToLink {
 		source := match.Representative.Path
 		for _, dup := range match.Duplicates {
 			select {
 			case <-ctx.Done():
-				d.updateProgress("Idle")
+				d.stats.LinksCreated, d.stats.LinksFailed = successCount, failCount
+				d.updateProgress(Progress{Phase: PhaseIdle, Message: "Idle"})
 				return report, ctx.Err()
 			default:
 			}
@@ -558,6 +594,10 @@ func (d *Deduplicator) processMatches(ctx context.Context, entries []FileEntry) 
 			} else {
 				successCount++
 			}
+			if time.Since(lastLinkProgress) >= 5*time.Second {
+				lastLinkProgress = time.Now()
+				d.updateProgress(Progress{Phase: PhaseLink, Done: successCount + failCount, Total: linkTotal, Message: fmt.Sprintf("Linking: %d/%d", successCount+failCount, linkTotal)})
+			}
 		}
 	}
 
@@ -565,7 +605,8 @@ func (d *Deduplicator) processMatches(ctx context.Context, entries []FileEntry) 
 	if failCount > 0 {
 		fmt.Printf("Warning: %s linking operations failed. Run with --verbose to view details.\n", formatNumber(failCount))
 	}
-	d.updateProgress("Idle")
+	d.stats.LinksCreated, d.stats.LinksFailed = successCount, failCount
+	d.updateProgress(Progress{Phase: PhaseIdle, Message: "Idle"})
 	return report, nil
 }
 
