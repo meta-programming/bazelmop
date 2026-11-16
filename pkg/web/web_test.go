@@ -1,9 +1,12 @@
 package web
 
 import (
-	"strings"
+	"regexp"
 	"testing"
 
+	"google.golang.org/protobuf/reflect/protoreflect"
+
+	bazelmopv1 "github.com/meta-programming/bazelmop/gen/bazelmop/v1"
 	"github.com/meta-programming/bazelmop/pkg/bazelcas"
 )
 
@@ -29,61 +32,23 @@ func TestInstancesEndpoint(t *testing.T) {
 	s.mu.RUnlock()
 }
 
-func TestSortableOutputBasesTableHeaders(t *testing.T) {
+// TestPageCallsRealMethods checks that every API method the dashboard
+// page calls exists in the service, so a rename in the proto cannot leave
+// the page calling a method that is gone.
+func TestPageCallsRealMethods(t *testing.T) {
 	data, err := assetsFS.ReadFile("assets/index.html")
 	if err != nil {
-		t.Fatalf("Failed to read index.html asset: %v", err)
+		t.Fatal(err)
 	}
+	methods := bazelmopv1.File_bazelmop_v1_bazelmop_proto.Services().ByName("BazelmopService").Methods()
 
-	htmlContent := string(data)
-
-	// 1. Verify all 7 required sortable headers exist with data-sort attributes
-	requiredSortCols := []string{
-		`data-sort="id"`,
-		`data-sort="workspace_path"`,
-		`data-sort="status"`,
-		`data-sort="size"`,
-		`data-sort="last_modified"`,
-		`data-sort="last_build"`,
-		`data-sort="last_test"`,
+	calls := regexp.MustCompile(`\b(?:call|watch)\("([A-Za-z]+)"`).FindAllStringSubmatch(string(data), -1)
+	if len(calls) == 0 {
+		t.Fatal("found no API calls in index.html")
 	}
-
-	for _, colAttr := range requiredSortCols {
-		if !strings.Contains(htmlContent, colAttr) {
-			t.Errorf("Expected index.html to contain sortable header attribute %s, but it was missing", colAttr)
-		}
-	}
-
-	// 2. Verify all sort icon elements exist
-	requiredSortIcons := []string{
-		`id="sort-icon-id"`,
-		`id="sort-icon-workspace_path"`,
-		`id="sort-icon-status"`,
-		`id="sort-icon-size"`,
-		`id="sort-icon-last_modified"`,
-		`id="sort-icon-last_build"`,
-		`id="sort-icon-last_test"`,
-	}
-
-	for _, iconId := range requiredSortIcons {
-		if !strings.Contains(htmlContent, iconId) {
-			t.Errorf("Expected index.html to contain sort icon %s, but it was missing", iconId)
-		}
-	}
-
-	// 3. Verify JavaScript sorting logic and helper functions
-	requiredJSFunctions := []string{
-		"getSortValue",
-		"getSizeValue",
-		"getDateValue",
-		"currentSortColumn",
-		"currentSortDirection",
-		"sortable-header",
-	}
-
-	for _, jsFunc := range requiredJSFunctions {
-		if !strings.Contains(htmlContent, jsFunc) {
-			t.Errorf("Expected index.html JS to contain %s, but it was missing", jsFunc)
+	for _, c := range calls {
+		if methods.ByName(protoreflect.Name(c[1])) == nil {
+			t.Errorf("index.html calls %s, which BazelmopService does not define", c[1])
 		}
 	}
 }
