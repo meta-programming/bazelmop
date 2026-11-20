@@ -58,6 +58,18 @@ type Instance struct {
 	LastTestTime time.Time `json:"last_test_time"`
 }
 
+// LastUsed returns when the instance was last used: the last build for an
+// output base, or the newest file mtime when no build time is known.
+//
+// File mtimes alone are not a usable age for an output base, because
+// deduplication replaces files and so keeps them recent.
+func (i *Instance) LastUsed() time.Time {
+	if !i.LastBuildTime.IsZero() {
+		return i.LastBuildTime
+	}
+	return i.LastModified
+}
+
 // GCOptions defines filtering criteria for garbage collection candidate selection.
 type GCOptions struct {
 	// TTL is the time-to-live threshold. Instances older than TTL are selected.
@@ -66,6 +78,8 @@ type GCOptions struct {
 	TargetFreeBytes int64
 	// OrphanedOnly filters only orphaned instances if true.
 	OrphanedOnly bool
+	// OutputBasesOnly leaves the repository cache out of the candidates.
+	OutputBasesOnly bool
 }
 
 // ResolveWorkspacePath attempts to read the original workspace path for an Output Base.
@@ -306,12 +320,13 @@ func scanInstance(sys fs.FS, rootPath, relDir, id string, instType InstanceType,
 	return inst
 }
 
-// resolveLastBuildTime calculates the maximum mtime of command.profile.gz, action_cache,
-// lock, server/server.starttime, and command-*.profile.gz inside an output base.
+// resolveLastBuildTime calculates the maximum mtime of command.log, command.profile.gz,
+// action_cache, lock, server/server.starttime, and command-*.profile.gz inside an output base.
 func resolveLastBuildTime(sys fs.FS, relDir string) time.Time {
 	var maxTime time.Time
 
 	fixedPaths := []string{
+		filepath.Join(relDir, "command.log"),
 		filepath.Join(relDir, "command.profile.gz"),
 		filepath.Join(relDir, "action_cache"),
 		filepath.Join(relDir, "lock"),
@@ -454,11 +469,12 @@ func SortInstances(instances []*Instance, sortBy string) {
 		case "lru":
 			fallthrough
 		default:
-			// Oldest last modified first (LRU candidate)
-			if instances[i].LastModified.Equal(instances[j].LastModified) {
+			// Least recently used first.
+			a, b := instances[i].LastUsed(), instances[j].LastUsed()
+			if a.Equal(b) {
 				return instances[i].ID < instances[j].ID
 			}
-			return instances[i].LastModified.Before(instances[j].LastModified)
+			return a.Before(b)
 		}
 	})
 }
@@ -472,9 +488,12 @@ func FilterInstances(instances []*Instance, opts GCOptions, now time.Time) []*In
 		if opts.OrphanedOnly && inst.Status != StatusOrphaned {
 			continue
 		}
+		if opts.OutputBasesOnly && inst.Type != TypeOutputBase {
+			continue
+		}
 
 		if opts.TTL > 0 {
-			age := now.Sub(inst.LastModified)
+			age := now.Sub(inst.LastUsed())
 			if age < opts.TTL {
 				continue
 			}
