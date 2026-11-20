@@ -283,3 +283,22 @@ func TestDiscoverInstancesFlatRoot(t *testing.T) {
 		t.Errorf("expected to find repo cache in flat root")
 	}
 }
+
+func TestFilterInstancesUsesLastBuild(t *testing.T) {
+	now := time.Now()
+	day := 24 * time.Hour
+	// Deduplication keeps file mtimes recent, so only the build time shows
+	// this output base is idle.
+	idle := &Instance{ID: "idle", Type: TypeOutputBase, LastModified: now, LastBuildTime: now.Add(-10 * day)}
+	busy := &Instance{ID: "busy", Type: TypeOutputBase, LastModified: now.Add(-10 * day), LastBuildTime: now.Add(-1 * day)}
+	repo := &Instance{ID: "repo-cache", Type: TypeRepoCache, LastModified: now.Add(-10 * day)}
+
+	got := FilterInstances([]*Instance{idle, busy, repo}, GCOptions{TTL: 7 * day, OutputBasesOnly: true}, now)
+	if len(got) != 1 || got[0].ID != "idle" {
+		var ids []string
+		for _, i := range got {
+			ids = append(ids, i.ID)
+		}
+		t.Errorf("FilterInstances(TTL 7d, output bases only) = %v, want [idle]", ids)
+	}
+}

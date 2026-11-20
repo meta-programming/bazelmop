@@ -47,6 +47,7 @@ var (
 	gcOrphaned    bool
 	gcExecute     bool
 	gcInteractive bool
+	pruneIdle     string
 )
 
 func main() {
@@ -96,6 +97,7 @@ func main() {
 	daemonCmd.Flags().BoolVar(&webEnabled, "web", false, "Enable the web report dashboard server")
 	daemonCmd.Flags().StringVar(&webHost, "web-host", "localhost", "Binding address for the web dashboard")
 	daemonCmd.Flags().StringVar(&webPort, "web-port", "8080", "Port for the web dashboard server")
+	daemonCmd.Flags().StringVar(&pruneIdle, "prune-idle", "", "Before each run, delete output bases with no build for this long (e.g. 7d); off when empty")
 	daemonCmd.Flags().StringVar(&runLogPath, "run-log", "", "File that keeps the history of runs (default: $XDG_STATE_HOME/bazelmop/runs.jsonl)")
 
 	var outputBasesCmd = &cobra.Command{
@@ -188,6 +190,13 @@ func runDedupe(isDryRun bool) {
 	fmt.Printf("Scan external:  %v\n", config.ScanExternal)
 	fmt.Printf("Scan bazel-out: %v\n", config.ScanBazelOut)
 	fmt.Printf("Min Report Sz:  %d MB\n", minReportSizeMB)
+	pruneTTL, err := bazelcas.ParseTTL(pruneIdle)
+	if err != nil {
+		log.Fatalf("Invalid --prune-idle: %v", err)
+	}
+	if pruneTTL > 0 {
+		fmt.Printf("Prune idle:     %s\n", pruneIdle)
+	}
 	fmt.Println("=========================================================")
 
 	// Setup context with cancellation for graceful shutdown
@@ -259,6 +268,13 @@ func runDaemon() {
 	fmt.Printf("Scan external:  %v\n", config.ScanExternal)
 	fmt.Printf("Scan bazel-out: %v\n", config.ScanBazelOut)
 	fmt.Printf("Min Report Sz:  %d MB\n", minReportSizeMB)
+	pruneTTL, err := bazelcas.ParseTTL(pruneIdle)
+	if err != nil {
+		log.Fatalf("Invalid --prune-idle: %v", err)
+	}
+	if pruneTTL > 0 {
+		fmt.Printf("Prune idle:     %s\n", pruneIdle)
+	}
 	if webEnabled {
 		fmt.Printf("Web Dashboard:  http://%s:%s\n", webHost, webPort)
 	}
@@ -300,6 +316,9 @@ func runDaemon() {
 	runner := func(nextScan time.Time) {
 		start := time.Now()
 		fmt.Printf("\n[%s] Starting scheduled scan...\n", start.Format(time.RFC3339))
+		if pruneTTL > 0 && !dryRun {
+			pruneIdleOutputBases(pruneTTL)
+		}
 		d := dedupe.NewDeduplicator(config)
 
 		run := runlog.Run{ID: start.UTC().Format("20060102T150405Z"), Start: start}
@@ -589,6 +608,10 @@ func runOutputBasesPrune(ttlStr, targetFreeStr string, orphanedOnly, execute, in
 			shouldDelete = bazelcas.ReadPrompt(os.Stdin, prompt)
 		}
 
+		if shouldDelete && bazelcas.ServerRunning(cand.Path) {
+			fmt.Printf("Skipped %s: its Bazel server is running\n", cand.ID)
+			continue
+		}
 		if shouldDelete {
 			fmt.Printf("Deleting %s (%s)... ", cand.Path, bazelcas.FormatSize(cand.SizeBytes))
 			err := bazelcas.RemoveAll(cand.Path)
@@ -607,6 +630,33 @@ func runOutputBasesPrune(ttlStr, targetFreeStr string, orphanedOnly, execute, in
 	fmt.Println("--------------------------------------------------------------------------------")
 	fmt.Printf("Garbage Collection Complete: Removed %d instances, reclaimed %s of disk space.\n", deletedCount, bazelcas.FormatSize(deletedBytes))
 	fmt.Println("================================================================================")
+}
+
+// pruneIdleOutputBases deletes output bases with no build for at least ttl.
+// It skips any whose Bazel server is still running.
+func pruneIdleOutputBases(ttl time.Duration) {
+	instances, err := bazelcas.DiscoverInstances(os.DirFS(rootPath), rootPath)
+	if err != nil {
+		log.Printf("Warning: cannot list output bases to prune: %v", err)
+		return
+	}
+	opts := bazelcas.GCOptions{TTL: ttl, OutputBasesOnly: true}
+	var removed int
+	var removedBytes int64
+	for _, inst := range bazelcas.FilterInstances(instances, opts, time.Now()) {
+		if bazelcas.ServerRunning(inst.Path) {
+			continue
+		}
+		if err := bazelcas.RemoveAll(inst.Path); err != nil {
+			log.Printf("Warning: cannot delete idle output base %s: %v", inst.Path, err)
+			continue
+		}
+		log.Printf("Deleted output base %s (%s, last build %s, workspace %s)", inst.ID,
+			bazelcas.FormatSize(inst.SizeBytes), inst.LastUsed().Format(time.DateOnly), inst.WorkspacePath)
+		removed++
+		removedBytes += inst.SizeBytes
+	}
+	fmt.Printf("Pruned %d idle output bases (%s).\n", removed, bazelcas.FormatSize(removedBytes))
 }
 
 // samplePeakMemory records the highest memory charged to this process's
